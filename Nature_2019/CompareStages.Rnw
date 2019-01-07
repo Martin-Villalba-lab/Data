@@ -1,0 +1,589 @@
+
+\subsection{Compare neural differentiation stages}
+Create an output directory.
+<<RiboTagStagesDir>>=
+d = file.path("result","CompareStages","")
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","mainmenu.html")
+
+library(grid)
+source(file.path("R","myballoonplot.R"))
+load(file.path("data","ENSG2category.rda"))
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagStagesFigDir,include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+<<RiboTagStages>>=
+log2FC = log2total = log2FCsd = log2totalSD = list()
+S = names(SamplesTranslationEfficiency)
+TransEff = list()
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+  TransEff[[s]] = res
+  a = attributes(res)
+  log2FC[[s]] = a$log2FC
+  log2total[[s]] = a$log2total
+  log2FCsd[[s]] = a$log2FCsd
+  log2totalSD[[s]] = a$log2totalSD
+}
+log2FC = do.call(cbind, log2FC)
+log2total = do.call(cbind, log2total)
+log2FCsd = do.call(cbind, log2FCsd)
+log2totalSD = do.call(cbind, log2totalSD)
+@
+
+<<RiboTagStagesSupplTable>>=
+for (s in names(TransEff)) {
+    TransEff[[s]]$ENSG = row.names(TransEff[[s]])
+    TransEff[[s]] = TransEff[[s]][,c("ENSG","symbol","log2FoldChange",
+                                     "pval","padj","significant")]
+    colnames(TransEff[[s]])[3:6] = paste(s,colnames(TransEff[[s]])[3:6],sep=".")
+}
+
+X = merge(TransEff[[1]],TransEff[[2]], by=c("ENSG","symbol"),
+          suffixes=c("",""), all=TRUE)
+Y = merge(TransEff[[3]],TransEff[[4]], by=c("ENSG","symbol"),
+          suffixes=c("",""), all=TRUE)
+Z = merge(X,Y, by=c("ENSG","symbol"),suffixes=c("",""), all=TRUE)
+write.table(Z, file = file.path(d, "TableS4-TranslationEfficiency.txt"), 
+            sep="\t", row.names=FALSE, quote=FALSE)
+
+@
+
+<<RiboTagStagesRank>>=
+I = Anno$transript_type == "protein_coding"
+log2FC = log2FC[I,]
+log2total = log2total[I,]
+log2FCsd = log2FCsd[I,]
+log2totalSD = log2totalSD[I,]
+log2totalRank = log2total
+for (s in S) {
+  log2totalRank[,s] = rank(log2total[,s])
+}
+@
+
+<<RiboTagStagesQuantile>>=
+log2totalQ = log2total
+Q = apply(log2totalQ, 2, quantile, probs=seq(0,1,length.out = 11))
+q = apply(Q,1,mean)
+for (s in S) {
+  log2totalQ[,s] = approx(x = Q[,s],q, xout=log2totalQ[,s],rule = 2)$y
+}
+@
+
+<<RiboTagStagesNormalizeLocalSD,fig.path=d>>=
+for (s in S) {
+  plot(log2totalRank[,s],log2FCsd[,s],pch=20,cex=0.3,col="grey",
+       xlab="rank count totalRNA", ylab="sd(log2FC)")
+  fit = loess(log2FCsd[,s] ~ rank(log2total[,s]))
+  points(log2totalRank[,s],fit$fitted,col="blue")
+  points(log2totalRank[,s],2*fit$fitted,col="red")
+  SD = fit$fitted
+  J = which(log2FCsd[,s] > 2*fit$fitted)
+  SD[J] = log2FCsd[J,s]
+  log2FCsd[,s] = log2FCsd[,s] / SD
+}
+@
+
+<<RiboTagStagesNormalizeGlobalSD,fig.path=d>>=
+for (s in S) {
+  b = cut(log2totalRank[,s],breaks=15)
+#  M = tapply(log2FC[,s], b, median)
+  MD = tapply(log2FC[,s], b, mad)
+  x = tapply(log2total[,s], b, mean)
+#  M[1:3] = M[4]
+  MD[1:3] = MD[4]
+#  Mnew = approx(x=x,y=M,xout=log2total[,s],rule = 2)
+  MDnew = approx(x=x,y=MD,xout=log2total[,s],rule = 2)
+  plot(log2total[,s],log2FC[,s],pch=20,cex=0.3,col="grey",
+       xlab="rank count totalRNA", ylab="sd(log2FC)")
+#  points(Mnew$x,Mnew$y,col="blue")
+  points(MDnew$x,MDnew$y,col="blue")
+  
+  log2FC[,s] = log2FC[,s] / MDnew$y
+#   log2FC[,s] = 
+#     (log2FC[,s] - Mnew$y) / MDnew$y
+  
+#   plot(log2FC[Anno$transript_type == "protein_coding",s],
+#   log2total[Anno$transript_type == "protein_coding",s])
+}
+@
+
+% ########
+% for (s in S) {
+%   png(sprintf("stmp-%s.png",s),width=800,height=800)
+%   plot(rank(log2total[Anno$transript_type == "protein_coding","NEURON"]),
+%        log2FC[Anno$transript_type == "protein_coding",s],
+%        main=sprintf("%s - up",s),pch=20,
+%        cex=0.8,col="#00000033")
+%   abline(a=0,b=1,col="gray")
+%   dev.off()
+% }
+
+<<RiboTagStagesBarplot,fig.path=d,fig.height=5>>=
+p = par(xpd=NA,mar=c(1.5,4,1.5,2.5))
+H = matrix(NA, nrow=4, ncol=4)
+colnames(H) = S
+row.names(H) = c("highSigUp","sigUp","sigDown","highSigDown")
+n = rep(NA,4)
+names(n) = S
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+  H["highSigUp",s] = sum(res$significant == "**" & res$log2FoldChange > 0,na.rm=TRUE)
+  H["sigUp",s] = sum(res$significant == "*" & res$log2FoldChange > 0,na.rm=TRUE)
+  H["sigDown",s] = sum(res$significant == "*" & res$log2FoldChange < 0,na.rm=TRUE)
+  H["highSigDown",s] = sum(res$significant == "**" & res$log2FoldChange < 0,na.rm=TRUE)
+  n[s] = sum(is.finite(res$padj))
+}
+
+col=brewer.pal(4,"RdBu")
+ylim=c(0,max(H[c(1,4),]+H[c(2:3),]))
+bp1 = barplot(H[1:2,],col=col[1:2],space=c(0.2,1.6,1.6,1.6),names.arg = rep("",4),
+              xlim=c(0,10.4),ylim=ylim,ylab="number of proteins")
+bp2 = barplot(H[4:3,],col=col[4:3],space=c(1.3,1.6,1.6,1.6),names.arg = rep("",4),add=TRUE)
+text((bp1+bp2)/2,rep(-0.05*ylim[2],4),S)
+legend(x=0.0,y=0.97*ylim[2],fill=col[c(2:3)],c("",""),bty = "n")
+legend(x=0.3,y=0.97*ylim[2],fill=col[c(1,4)],c("enhanced translation","repressed translation"),bty = "n")
+x = bp2[4]+0.5
+y = H["highSigDown","NEURON"]
+lines(c(x+0.05,x+0.2),c(y,y))
+text(x+0.25,y = y,"1% FDR",adj = c(0,0.5))
+y = H["sigDown","NEURON"] + H["highSigDown","NEURON"]
+lines(c(x+0.05,x+0.2),c(y,y))
+text(x+0.25,y = y,"10% FDR",adj = c(0,0.5))
+
+for (i in 1:4) {
+    H[,i] = H[,i] / n[i]
+}
+H = H*100
+
+ylim=c(0,max(H[c(1,4),]+H[c(2:3),]))
+bp1 = barplot(H[1:2,],col=col[1:2],space=c(0.2,1.6,1.6,1.6),names.arg = rep("",4),
+              xlim=c(0,10.4),ylim=ylim,ylab="fraction of proteins [%]")
+bp2 = barplot(H[4:3,],col=col[4:3],space=c(1.3,1.6,1.6,1.6),names.arg = rep("",4),add=TRUE)
+text((bp1+bp2)/2,rep(-0.05*ylim[2],4),S)
+legend(x=0.0,y=0.97*ylim[2],fill=col[c(2:3)],c("",""),bty = "n")
+legend(x=0.3,y=0.97*ylim[2],fill=col[c(1,4)],c("enhanced translation","repressed translation"),bty = "n")
+x = bp2[4]+0.5
+y = H["highSigDown","NEURON"]
+lines(c(x+0.05,x+0.2),c(y,y))
+text(x+0.25,y = y,"1% FDR",adj = c(0,0.5))
+y = H["sigDown","NEURON"] + H["highSigDown","NEURON"]
+lines(c(x+0.05,x+0.2),c(y,y))
+text(x+0.25,y = y,"10% FDR",adj = c(0,0.5))
+
+par(p)
+@
+
+<<RiboTagStagesVenndiagram>>=
+ENSG = c()
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+  ENSG = c(ENSG, row.names(res))
+}
+ENSG = sort(unique(ENSG))
+X = matrix(factor("0",levels=c("repressed","0","enhanced")), nrow = length(ENSG), ncol=4)
+row.names(X) = ENSG
+colnames(X) = S
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+  a = res$significant
+  a[a == "**"] = "enhanced"
+  a[a == "*"] = "enhanced"
+  a[res$log2FoldChange < 0 & a == "enhanced"] = "repressed"
+  a[a == ""] = "0"
+  X[row.names(res),s] = a
+}
+
+t1 = table("NSC" = factor(X[,1],levels=c("repressed","0","enhanced")),
+           "ENB"=factor(X[,2],levels=c("repressed","0","enhanced")))
+t2 = table("ENB" = factor(X[,2],levels=c("repressed","0","enhanced")),
+           "LNB"=factor(X[,3],levels=c("repressed","0","enhanced")))
+t3 = table("LNB" = factor(X[,3],levels=c("repressed","0","enhanced")),
+           "NEURON"=factor(X[,4],levels=c("repressed","0","enhanced")))
+
+col = matrix("gray90", nrow=3, ncol=3)
+col[1,1] = col[2,1] = col[1,2] = brewer.pal(9, "Pastel1")[2]
+col[3,3] = col[2,3] = col[3,2] = brewer.pal(9, "Pastel1")[1]
+myballoonplot(t1, col = col, cex = 2)
+grid.newpage()
+myballoonplot(t2, col = col, cex = 2)
+grid.newpage()
+myballoonplot(t3, col = col, cex = 2)
+@
+
+<<RiboTagStagesGSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fgdown = row.names(X)[which(X[,3] == "repressed" & X[,4] == "repressed")]
+fgup = row.names(X)[which(X[,3] == "enhanced" & X[,4] == "enhanced")]
+load(file.path("result","TranslationEfficiency","LNB","res.rda"))
+bg = row.names(res)
+load(file.path("result","TranslationEfficiency","NEURON","res.rda"))
+bg = bg[bg %in% row.names(res)]
+GSEAup = doGSEA(fgup,bg,ENSG2category, k=3)
+GSEAdown = doGSEA(fgdown,bg,ENSG2category, k=3)
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagStagesGSEAreport, echo=FALSE, results='hide'>>=
+hwriteGSEAreport(GSEAup, d = file.path(d, "GSEAup"),
+                 ENSGannotation=ENSGannotation, 
+                 title = "Gene set enrichment analysis (LNB and NEURON, enhanced translated proteins)",
+                 prefix = "transEfficiencyUp-")
+
+hwriteGSEAreport(GSEAdown, d = file.path(d, "GSEAdown"),
+                 ENSGannotation=ENSGannotation, 
+                 title = "Gene set enrichment analysis (LNB and NEURON, repressed translated proteins)",
+                 prefix = "transEfficiencyDown-")
+@
+
+
+<<RiboTagStagesCluster,fig.path=d>>=
+library(cluster)
+colG = colH = G = H = list()
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+  K = rep(3,nrow(res))
+  K[which(res$significant == "*" & res$log2FoldChange > 0)] = 4
+  K[which(res$significant == "**" & res$log2FoldChange > 0)] = 5
+  K[which(res$significant == "*" & res$log2FoldChange < 0)] = 2
+  K[which(res$significant == "**" & res$log2FoldChange < 0)] = 1
+
+  G[[s]] = row.names(res)[which(K == 5)]
+  H[[s]] = row.names(res)[which(K == 1)]
+
+  # X = cbind(log2FC,log2totalQ)
+  # for (i in seq_len(ncol(X))) {
+  #   X[,i] = X[,i] - median(X[,i])
+  #   X[,i] = X[,i] / mad(X[,i])
+  # }
+  # 
+  # if (length(G[[s]]) >= 10) {
+  #   CL<-1:5
+  #   avgSil<-rep(NA, length(CL))
+  #   for(cl in CL[2:length(CL)])
+  #     avgSil[cl]<-pam(X[G[[s]],], k=cl)$silinfo$avg.width
+  #   barplot(avgSil, names.arg=CL, xlab="Number of clusters, K", ylab="Average silhoue",main=s)
+  #   CL = which.max(avgSil)
+  #   cl = pam(X[G[[s]],], k=CL)
+  #   colG[[s]] = rainbow(CL)[cl$clustering]
+  #   names(colG[[s]]) = G[[s]]
+  # } else {
+  #   colG[[s]] = rep("blue", length(G[[s]]))
+  #   names(colG[[s]]) = G[[s]]
+  # }
+  # 
+  # if (length(H[[s]]) >= 10) {
+  #   CL<-1:5
+  #   avgSil<-rep(NA, length(CL))
+  #   for(cl in CL[2:length(CL)])
+  #     avgSil[cl]<-pam(X[H[[s]],], k=cl)$silinfo$avg.width
+  #   barplot(avgSil, names.arg=CL, xlab="Number of clusters, K", ylab="Average silhoue",main=s)
+  #   CL = which.max(avgSil)
+  #   cl = pam(X[H[[s]],], k=CL)
+  #   colH[[s]] = rainbow(CL)[cl$clustering]
+  #   names(colH[[s]]) = H[[s]]
+  # } else {
+  #   colH[[s]] = rep("blue", length(H[[s]]))
+  #   names(colH[[s]]) = H[[s]]
+  # }
+}
+@
+
+<<RiboTagStagesLinesFC,fig.width=5,fig.height=5,fig.path=d>>=
+ylim = range(log2FC)
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+
+  plot(-100000,xlim=c(0.9,4.1), ylim=ylim,xaxt="n",
+       main=sprintf("enhanced or repressed translated in %s",s),
+       xlab="",ylab="translation efficiency [log2]")
+  axis(side=1,1:4,colnames(log2total))
+  col = rep("gray", nrow(log2FC))
+  names(col) = row.names(log2FC)
+  col[H[[s]]] = brewer.pal(4,"RdBu")[4]
+  col[G[[s]]] = brewer.pal(4,"RdBu")[1]
+  K = rep(1, nrow(log2FC))
+  names(K) = row.names(log2FC)
+  K[c(G[[s]],H[[s]])] = 2
+  I = sample(row.names(res))
+  I = I[order(K[I])]
+  for (k in I) {
+    lines(log2FC[k,],col=col[k])
+  }
+  if (s == "ENB") {
+      if ("ENSMUSG00000074637" %in% rownames(log2FC)) {
+          lines(log2FC["ENSMUSG00000074637",],col="black",lwd=3) # Sox2
+      }
+      if ("ENSMUSG00000027168" %in% rownames(log2FC)) {
+          lines(log2FC["ENSMUSG00000027168",],col="black",lwd=3, lty="dashed") # Pax6
+      }
+      if ("ENSMUSG00000059070" %in% rownames(log2FC)) {
+          lines(log2FC["ENSMUSG00000059070",],col="black",lwd=3, lty="dotdash") # Rpl18
+      }
+      if (s == "ENB") {
+          lines(c(1.2,1.5),c(-10,-10),col="black",lwd=3) # Sox2
+          lines(c(1.2,1.5),c(-11,-11),col="black",lwd=3, lty="dashed") # Pax6
+          lines(c(1.2,1.5),c(-12,-12),col="black",lwd=3, lty="dotdash") # Rpl18
+          text(1.55,-10,"Sox2", adj = c(0,0.5))
+          text(1.55,-11,"Pax6", adj = c(0,0.5))
+          text(1.55,-12,"Rpl18", adj = c(0,0.5))
+      }
+  }
+  abline(h=0,col="gray")
+}
+@
+
+<<RiboTagStagesLinesFCdownENB,fig.width=5,fig.height=5,fig.path=d>>=
+ylim = range(log2FC)
+s = "ENB"
+load(file.path("result","TranslationEfficiency",s,"res.rda"))
+
+plot(-100000,xlim=c(0.9,4.1), ylim=ylim,xaxt="n",
+   main=sprintf("enhanced or repressed translated in %s",s),
+   xlab="",ylab="translation efficiency [log2]")
+axis(side=1,1:4,colnames(log2total))
+col = rep("gray", nrow(log2FC))
+names(col) = row.names(log2FC)
+col[H[[s]]] = brewer.pal(4,"RdBu")[4]
+#col[G[[s]]] = brewer.pal(4,"RdBu")[1]
+K = rep(1, nrow(log2FC))
+names(K) = row.names(log2FC)
+K[c(H[[s]])] = 2
+I = sample(row.names(res))
+I = I[order(K[I])]
+for (k in I) {
+  lines(log2FC[k,],col=col[k])
+}
+lines(log2FC["ENSMUSG00000074637",],col="black",lwd=3) # Sox2
+lines(log2FC["ENSMUSG00000027168",],col="black",lwd=3, lty="dashed") # Pax6
+lines(log2FC["ENSMUSG00000059070",],col="black",lwd=3, lty="dotdash") # Rpl18
+lines(c(1.2,1.5),c(-10,-10),col="black",lwd=3) # Sox2
+lines(c(1.2,1.5),c(-11,-11),col="black",lwd=3, lty="dashed") # Pax6
+lines(c(1.2,1.5),c(-12,-12),col="black",lwd=3, lty="dotdash") # Rpl18
+text(1.55,-10,"Sox2", adj = c(0,0.5))
+text(1.55,-11,"Pax6", adj = c(0,0.5))
+text(1.55,-12,"Rpl18", adj = c(0,0.5))
+abline(h=0,col="gray")
+@
+
+
+%   plot(-100000,xlim=c(0.5,4.5), ylim=ylim,xaxt="n",main=sprintf("enhanced or repressed translated in %s",s),xlab="",ylab="translation efficiency (log2)")
+%   axis(side=1,1:4,colnames(log2total))
+%   col = rep("gray", nrow(log2FC))
+%   names(col) = row.names(log2FC)
+%   col[H[[s]]] = brewer.pal(4,"RdBu")[4]
+% #  col[G[[s]]] = brewer.pal(4,"RdBu")[1]
+%   K = rep(1, nrow(log2FC))
+%   names(K) = row.names(log2FC)
+%   K[c(H[[s]])] = 2
+%   I = sample(row.names(res))
+%   I = I[order(K[I])]
+%   for (k in I) {
+%     lines(log2FC[k,],col=col[k])
+%   }
+% #  if (s == "ENB") {
+%   # lines(log2FC["ENSMUSG00000074637",],col="black",lwd=3)
+%   # lines(log2FC["ENSMUSG00000074637",],col="black",lwd=3)
+%   # lines(log2FC["ENSMUSG00000074637",],col="black",lwd=3)
+% #  }
+%   abline(h=0,col="gray")
+
+
+<<RiboTagStagesLinesTotal,fig.width=5,fig.height=5,fig.path=d>>=
+ylim = range(log2totalQ)
+for (s in S) {
+  load(file.path("result","TranslationEfficiency",s,"res.rda"))
+
+  plot(-100000,xlim=c(0.9,4.1), ylim=ylim,xaxt="n",
+       main=sprintf("enhanced or repressed translated in %s",s),
+       xlab="",ylab="total RNA [log2]")
+  axis(side=1,1:4,colnames(log2total))
+  col = rep("gray", nrow(log2FC))
+  names(col) = row.names(log2FC)
+  col[H[[s]]] = brewer.pal(4,"RdBu")[4]
+  col[G[[s]]] = brewer.pal(4,"RdBu")[1]
+  K = rep(1, nrow(log2FC))
+  names(K) = row.names(log2FC)
+  K[c(G[[s]],H[[s]])] = 2
+  I = sample(row.names(res))
+  I = I[order(K[I])]
+  for (k in I) {
+    lines(log2totalQ[k,],col=col[k])
+  }
+  if (s == "ENB") {
+      if ("ENSMUSG00000074637" %in% rownames(log2totalQ)) {
+          lines(log2totalQ["ENSMUSG00000074637",],col="black",lwd=3) # Sox2
+      }
+      if ("ENSMUSG00000027168" %in% rownames(log2totalQ)) {
+          lines(log2totalQ["ENSMUSG00000027168",],col="black",lwd=3, lty="dashed") # Pax6
+      }
+      if ("ENSMUSG00000059070" %in% rownames(log2totalQ)) {
+          lines(log2totalQ["ENSMUSG00000059070",],col="black",lwd=3, lty="dotdash") # Rpl18
+      }
+      if (s == "ENB") {
+          lines(c(1.2,1.5),c(3,3),col="black",lwd=3) # Sox2
+          lines(c(1.2,1.5),c(2,2),col="black",lwd=3, lty="dashed") # Pax6
+          lines(c(1.2,1.5),c(1,1),col="black",lwd=3, lty="dotdash") # Rpl18
+          text(1.55,3,"Sox2", adj = c(0,0.5))
+          text(1.55,2,"Pax6", adj = c(0,0.5))
+          text(1.55,1,"Rpl18", adj = c(0,0.5))
+      }
+  }
+  abline(h=0,col="gray")
+}
+@
+
+<<RiboTagStagesSVG,echo=FALSE,eval=FALSE>>=
+for (s in S) {
+  for (dir in c("up","down")) {
+    pdf(file=file.path("result","clustering",sprintf("lines-%s-%s.pdf",s,dir)),width=20,height=10)
+
+    load(file.path("result","TranslationEfficiency",s,"res.rda"))
+
+    ylim = range(log2FC[row.names(res),])
+    # plot(-100000,xlim=c(0.5,6.5), ylim=ylim,xaxt="n",main=sprintf("%s - up",s),xlab="",ylab="log2-FC (Ribo-total-ctrl)")
+    # axis(side=1,1:6,colnames(log2total))
+
+    vp = viewport(xscale=c(0.5,4.5), just = "left",
+                  x = unit(2.5,"lines"),
+                  width = unit(0.5,"npc")-unit(5,"lines"),
+                  height = unit(1,"npc")-unit(5,"lines"),
+                  yscale=ylim, name = "panelvpdata")
+    pushViewport(vp)
+    grid.yaxis(at = pretty(ylim))
+    grid.xaxis(at = 1:4, label = S)
+    grid.abline(intercept = 0, slope = 0)
+    if (dir == "up") {
+      Set = G[[s]]
+      col = colG[[s]]
+    } else {
+      Set = H[[s]]
+      col = colH[[s]]
+    }
+    for (k in Set) {
+      grid.lines(1:4,log2FC[k,],
+                 default.units = "native",
+                 gp = gpar(col=col[k]),
+                 name=paste("lineA",k,sep=""))
+      grid.garnish(paste("lineA",k,sep=""),
+                   onmouseover=paste(sprintf("document.getElementById('GeneSymbol.1.1.tspan.1').innerHTML='%s; %s; %s'; document.getElementById('lineA%s.1.1').setAttribute('stroke-width', '6px'); document.getElementById('lineB%s.1.1').setAttribute('stroke-width', '6px')",k,Anno[k,"transript_type"],Anno[k,"symbol"],k,k), sep=""),
+                   onmouseout=paste(sprintf("document.getElementById('GeneSymbol.1.1.tspan.1').innerHTML='%s; %s; %s'; document.getElementById('lineA%s.1.1').setAttribute('stroke-width', '2px'); document.getElementById('lineB%s.1.1').setAttribute('stroke-width', '2px')",k,Anno[k,"transript_type"],Anno[k,"symbol"],k,k), sep=""))
+    }
+    popViewport()
+
+    ylim = range(log2totalQ)
+    vp = viewport(xscale=c(0.5,4.5), just = "left",
+                  x = unit(2.5,"lines")+unit(0.5,"npc"),
+                  width = unit(0.5,"npc")-unit(5,"lines"),
+                  height = unit(1,"npc")-unit(5,"lines"),
+                  yscale=ylim, name = "panelvpdata3")
+    pushViewport(vp)
+    grid.yaxis(at = pretty(ylim))
+    grid.xaxis(at = 1:4, label = S)
+    grid.abline(intercept = 0, slope = 0)
+    for (k in Set) {
+      grid.lines(1:4,log2totalQ[k,], 
+                 default.units = "native",
+                 gp = gpar(col=col[k]),
+                 name=paste("lineB",k,sep=""))
+      grid.garnish(paste("lineB",k,sep=""),
+                   onmouseover=paste(sprintf("document.getElementById('GeneSymbol.1.1.tspan.1').innerHTML='%s; %s; %s'; document.getElementById('lineA%s.1.1').setAttribute('stroke-width', '6px'); document.getElementById('lineB%s.1.1').setAttribute('stroke-width', '6px')",k,Anno[k,"transript_type"],Anno[k,"symbol"],k,k), sep=""),
+                   onmouseout=paste(sprintf("document.getElementById('GeneSymbol.1.1.tspan.1').innerHTML='%s; %s; %s'; document.getElementById('lineA%s.1.1').setAttribute('stroke-width', '2px'); document.getElementById('lineB%s.1.1').setAttribute('stroke-width', '2px')",k,Anno[k,"transript_type"],Anno[k,"symbol"],k,k), sep=""))
+    }
+    popViewport()
+    
+    vp = viewport( name = "panelvpdata2")
+    pushViewport(vp)
+    grid.text("GeneSymbol", x = unit(4, "lines"), y=unit(1,"npc")-unit(1,"lines"), name="GeneSymbol",hjust = 0)
+    grid.text(sprintf("%s - %s",s,dir), x = unit(0.5, "npc"), y=unit(1,"npc")-unit(1,"lines"), name="Main")
+    popViewport()
+    grid.export(file.path("result","clustering",sprintf("lines-%s-%s.svg",s,dir)))
+    dev.off()
+    page = openPage(file.path("result","clustering",sprintf("lines-%s-%s.html",s,dir)), link.css = "hwriter.css")
+    hwriteSidebar(page=page, link="../../mainmenu.html")
+    L = sprintf("<object data=\"lines-%s-%s.svg\" type=\"image/svg+xml\"></object>",s,dir)
+    hwrite(L, page)
+    closePage(page, splash = FALSE)
+  }
+}
+
+@
+
+The explained variance is compared along the four differential stages.
+
+<<RiboTagStagesExpVar,fig.width=8,fig.height=5,fig.path=d>>=
+AllExpVar = NULL
+for (s in S) {
+    load(file.path("result","TranslationEfficiency",s,"ExpVar.rda"))
+#    row.names(ExpVar) = paste0(s, "rep. ", 1:2)
+    AllExpVar = rbind(AllExpVar, ExpVar)
+}
+
+row.names(AllExpVar) = NULL
+
+p = par(xpd = NA)
+bp = barplot(t(AllExpVar), col=brewer.pal(4, "Pastel1"), las=2, space = c(0.0, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2), ylab="explained variance", legend=TRUE, xlim=c(0, 18))
+text((bp[seq(1,8,by=2)]+bp[seq(2,8,by=2)])/2, y = -0.05, S)
+text(bp[seq(1,8,by=2)], y = 0.01, "rep. 1", adj=c(0,0.8), srt=90)
+text(bp[seq(2,8,by=2)], y = 0.01, "rep. 2", adj=c(0,0.8), srt=90)
+par(p)
+
+AllExpVar = AllExpVar[,c(1,3)]
+s = rowSums(AllExpVar)
+AllExpVar[,1] = AllExpVar[,1] / s
+AllExpVar[,2] = AllExpVar[,2] / s
+
+p = par(xpd = NA)
+bp = barplot(t(AllExpVar), col=brewer.pal(4, "Pastel1")[c(1,3)], las=2, space = c(0.0, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2), ylab="explained variance", legend=TRUE, xlim=c(0, 18))
+text((bp[seq(1,8,by=2)]+bp[seq(2,8,by=2)])/2, y = -0.05, S)
+text(bp[seq(1,8,by=2)], y = 0.01, "rep. 1", adj=c(0,0.8), srt=90)
+text(bp[seq(2,8,by=2)], y = 0.01, "rep. 2", adj=c(0,0.8), srt=90)
+par(p)
+@
+
+<<RiboTagStagesWebpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+
+hwrite("Comparison of neural differentiation stages", heading=1, 
+       page=page)
+
+hwrite("Number of hits", heading=3, 
+       page=page)
+M = matrix(sprintf("RiboTagStagesBarplot-%d.png",1:2), ncol=1)
+row.names(M) = c("nr of hits","fraction of hits")
+L = matrix(sprintf("RiboTagStagesBarplot-%d.pdf",1:2), ncol=1)
+hwriteImage(M,link=L,page=page,br=TRUE)
+
+hwrite("Line plots", page=page, heading=3)
+M = cbind(sprintf("RiboTagStagesLinesFC-%d.png",1:4),
+          sprintf("RiboTagStagesLinesTotal-%d.png",1:4))
+colnames(M) = c("translation efficiency","total RNA")
+L = cbind(sprintf("RiboTagStagesLinesFC-%d.pdf",1:4),
+          sprintf("RiboTagStagesLinesTotal-%d.pdf",1:4))
+hwriteImage(M,link=L,page=page,br=TRUE)
+
+hwrite("Comparing hits between stages", page=page, heading=3)
+M = matrix(sprintf("RiboTagStagesVenndiagram-%d.png",1:3), ncol=1)
+L = matrix(sprintf("RiboTagStagesVenndiagram-%d.pdf",1:3), ncol=1)
+hwriteImage(M,link=L,page=page,br=TRUE)
+
+hwrite("Gene set enrichment analysis of proteins enhanced/repressed in both LNB and NEURON", page=page, br=TRUE)
+hwrite(rbind("both enhanced", "both repressed"),
+            link=c(file.path("GSEAup","index.html"),file.path("GSEAdown","index.html")),
+            page=page,br=TRUE)
+
+hwrite("Explained variance", page=page, heading=3)
+M = matrix(sprintf("RiboTagStagesExpVar-%d.png",1:2), ncol=1)
+L = matrix(sprintf("RiboTagStagesExpVar-%d.pdf",1:2), ncol=1)
+hwriteImage(M,link=L,page=page,br=TRUE)
+
+closePage(page, splash=FALSE)
+@
+

@@ -1,0 +1,1404 @@
+
+\subsection{Filter unspecific binders in NSC}
+Create an output directory.
+<<RiboTagFilterUnspecNSCdir>>=
+n = "NSC"
+d = file.path("result","TranslationEfficiency", n)
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","..","mainmenu.html")
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagFilterUnspecFigDirNSC,include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+A DESeq dataset is created that contains the respective samples.
+
+<<RiboTagFilterUnspecNSCmatrix,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+Design = DesignTranslationEfficiency
+EC_all <- expectedCounts[,SamplesTranslationEfficiency[[n]]]
+SL <- SampleList[SamplesTranslationEfficiency[[n]],]
+# dds_all <- DESeqDataSetFromMatrix(
+#     countData = expectedCounts[,SamplesTranslationEfficiency[[n]]],
+#     colData = SampleList[SamplesTranslationEfficiency[[n]],],
+#     design = ~ Type)
+# mcols(dds_all) = Anno
+# colData(dds_all)
+@
+
+Log counts are computed and plotted as a pairs plot.
+<<RiboTagTranslationEfficiencyNSCcounts,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+I = which(rowMeans(log2(EC_all[,
+            SL$Type == "RNAseq"]+1)) >= 10 &
+            Anno$transript_type == "protein_coding")
+EC = EC_all[I,]
+# I = which(rowMeans(log2(counts(dds_all)[,
+#             colData(dds_all)$Type == "RNAseq"]+1)) >= 10 &
+#             mcols(dds_all)$transript_type == "protein_coding")
+# dds = dds_all[I,]
+
+C = log2(EC+1)
+Call = log2(EC_all+1)
+# C = log2(counts(dds)+1)
+# Call = log2(counts(dds_all)+1)
+lim = range(as.vector(C))
+pairs(C,pch=20,cex=0.5,col="#00000022",xlim=lim, ylim=lim)
+@
+
+%' Genes with high read counts show a bi-modal distribution when comparing RiboTag and control samples. These genes are clustered in two clusters. 
+%' 
+%' <<RiboTagFilterUnspecNSCkmeans,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' A = which(dds$Type == "RIBOseq")
+%' B = which(dds$Type == "RIBOctr")
+%' I = which(rowMeans(C[,c(A,B)]) > 13)
+%' m = min(length(A),length(B))
+%' A = A[1:m]
+%' B = B[1:m]
+%' print(length(I))
+%' km = kmeans(C[I,A] - C[I,B],centers = 2)
+%' r = rowMeans(km$centers)
+%' if (r[1] > r[2]) {
+%'   km$cluster = ifelse(km$cluster == 1,2,1)
+%' }
+%' pairs(C[I,A] - C[I,B], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s; Difference Ribo - RiboCtrl",n))
+%' pairs(C[I,], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s",n))
+%' @
+
+%' <<RiboTagFilterUnspecNSCdensity,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' for (i in seq_along(A)) {
+%'   plot(density(C[I,A[i]] - C[I,B[i]]), lwd=3, main=sprintf("%s; Difference Ribo - RiboCtrl",colnames(C[,A,drop=FALSE])[i]))
+%'   a = (C[I,A[i]] - C[I,B[i]])[km$cluster == 1]
+%'   b = (C[I,A[i]] - C[I,B[i]])[km$cluster == 2]
+%'   rug(a, col="red")
+%'   rug(b, col="blue")
+%' }
+%' @
+
+The genes in the cluster with lower read counts in the control sample are used to estimate the size factors.
+
+<<RiboTagTranslationEfficiencyNSCsizefactors,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+s = sizeFactors(estimateSizeFactors(DESeqDataSetFromMatrix(
+    countData = round(EC), colData = SL, design = ~ Type),
+    controlGenes=which(rowMeans(log2(EC[,SL$Type == "RNAseq"]+1)) >= 13)))
+#sizeFactors(dds) = s
+p = par(mar=c(10,4,4,2)+0.1)
+barplot(s, main="estimates size factors",las=2)
+par(p)
+@
+
+The count data is normalized and unspecific binders are identified. Therefore, RiboControl samples are compared to total RNA samples. The genes that are significantly higher in RiboControl samples are potential unspecific binders of the tag. These genes are filtered as well.
+<<RiboTagTranslationEfficiencyNSCFilterUnspecific,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+D = C
+m = log2(s)
+for (i in 1:ncol(EC)) {
+  D[,i] = D[,i] - m[i]
+}
+Dall = Call
+for (i in 1:ncol(EC)) {
+  Dall[,i] = Dall[,i] - m[i]
+}
+
+IR = which(SL$Type == "RIBOseq")
+IT = which(SL$Type == "RNAseq")
+IC = which(SL$Type == "RIBOctr")
+
+fitc = eBayes(lmFit(cbind(D[,IC[1]]-D[,IT[1]],D[,IC[2]]-D[,IT[2]])))
+padjc = p.adjust(fitc$p.value[,1],method="BH")
+lfcc = fitc$coefficients[,1]
+
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfcc,
+     pch=20,cex=0.7,col=ifelse(padjc < 0.01, "red","gray"),
+     xlab="log2 read counts (Total RNA)", ylab="log2 fold change")
+abline(h=0)
+
+UnspecBinders = which(padjc <= 0.01 & lfcc > 0)
+
+fitc$padj = padjc
+
+@
+
+To estimate the translation efficiency, the RiboTag data is modeled as a function of RiboControl and total RNA. 
+<<RiboTagTranslationEfficiencyNSCmodel,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fit1 = list()
+for (i in 1:2) {
+  D2 = data.frame("Ribo" = D[,IR[i]], "Total" = D[,IT[i]], "ctrl" = D[,IC[i]])
+  fit1[[i]] = lm(Ribo ~ Total+ctrl, data=D2)
+  fit1[[i]]$anova = anova(fit1[[i]])
+  fit1[[i]]$expVar = fit1[[i]]$anova[,"Sum Sq",drop=FALSE]
+  fit1[[i]]$expVar = fit1[[i]]$expVar/sum(fit1[[i]]$expVar)
+  D2all = data.frame("Ribo" = Dall[,IR[i]], "Total" = Dall[,IT[i]], "ctrl" = Dall[,IC[i]], row.names = row.names(Dall))
+  p = predict(fit1[[i]],newdata = D2all)
+  fit1[[i]]$residualsAll = D2all$Ribo - p
+}
+
+R1 = fit1[[1]]$residuals
+R2 = fit1[[2]]$residuals
+R1all = fit1[[1]]$residualsAll
+R2all = fit1[[2]]$residualsAll
+R1all = R1all - shorth(R1,na.rm=TRUE)
+R2all = R2all - shorth(R2,na.rm=TRUE)
+R1 = R1 - shorth(R1,na.rm=TRUE)
+R2 = R2 - shorth(R2,na.rm=TRUE)
+
+
+D2 = data.frame("R1" = R1, "R2" = R2)
+fit2 = lm(data=D2)
+fit2$anova = anova(fit2)
+fit2$expVar = fit2$anova[,"Sum Sq",drop=FALSE]
+fit2$expVar = fit2$expVar/sum(fit2$expVar)
+
+fita = eBayes(lmFit(cbind(R1,R2)))
+padja = p.adjust(fita$p.value[,1],method="BH")
+lfca = fita$coefficients[,1]
+@
+
+<<RiboTagTranslationEfficiencyNSCExpVar,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+ExpVar = t(as.matrix(cbind(rep1=fit1[[1]]$expVar,rep2=fit1[[2]]$expVar)))
+ExpVar = cbind(ExpVar[,1:2],ExpVar[,3] * fit2$expVar[1,1], ExpVar[,3] * fit2$expVar[2,1])
+colnames(ExpVar) = c("total RNA", "background", "transl. eff.", "residuals")
+row.names(ExpVar) = paste0("rep ",1:2)
+# barplot(ExpVar,beside=TRUE,
+#         legend=TRUE,ylab="explained variance")
+# barplot(t(ExpVar),beside=FALSE,
+#         legend=TRUE,ylab="explained variance",xlim=c(0,4))
+@
+
+<<RiboTagTranslationEfficiencyNSCaddNames,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+res = as.data.frame(Anno[row.names(EC),])
+#res$symbol[is.na(res$symbol)] = row.names(res)[is.na(res$symbol)]
+
+res$pval = fita$p.value[,1]
+res$padj = padja
+res$log2FoldChange = lfca
+res$significant = ""
+res$significant[which(padja <= 0.1)] = "*"
+res$significant[which(padja <= 0.01)] = "**"
+attr(res,"log2FC") = rowMeans(cbind(R1all,R2all))
+attr(res,"log2total") = rowMeans(Dall[,IT])
+attr(res,"log2FCsd") = rowSds(cbind(R1all,R2all))
+attr(res,"log2TotalSD") = rowSds(Dall[,IT])
+@
+
+The R/Bioconductor package limma shrinks the standard deviation of each gene towards a global estimate of standard deviation along all genes. In the case of large outliers, this can result in spurious hits. To avoid these, genes with standard deviation larger than the absolute value of the log-fold change are not regarded as significant.
+<<RiboTagTranslationEfficiencyNSCfilterHighSigma,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+K = which(res$significant != "" & (fita$sigma > abs(fita$coefficients[,1])))
+
+write.table(res[K,], sep="\t", file = file.path(d, "filteredGenes.txt"), quote=FALSE)
+
+res$padj[K] = NA
+res$significant[K] = ""
+@
+
+<<RiboTagTranslationEfficiencyNSCMAplot,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+col=rep("gray", length(padja))
+col[which(res$significant == "*" & lfca > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & lfca < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & lfca > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & lfca < 0)] = brewer.pal(4,"RdBu")[4]
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfca,
+     pch=20,cex=0.7,col=col,
+     xlab="log2 read counts (total RNA)", ylab="translation efficiency [log2]")
+abline(h=0)
+
+plot(R1,R2,
+     pch=20,cex=0.7,col=col,
+     xlab="translation efficiency [log2] (rep. 1)", 
+     ylab="translation efficiency [log2] (rep. 2)",
+     xlim=c(-4,4),ylim=c(-4,4))
+abline(h=0,v=0)
+text(-3.8,3.8,paste0("R = ",format(cor(R1,R2,use="pairwise.complete"),digits=2)),adj = c(0,1))
+@
+
+The data is saved.
+
+<<RiboTagTranslationEfficiencyNSCsave,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+save(EC, file=file.path(d, "EC.rda"))
+save(res, file=file.path(d, "res.rda"))
+save(fitc, file=file.path(d, "fitc.rda"))
+save(ExpVar, file=file.path(d, "ExpVar.rda"))
+@
+
+
+<<RiboTagTranslationEfficiencyNSCcountsUnspec,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col = rep("#00000022", dim(C)[1])
+col[which(fitc$padj <= 0.1)] = "orange"
+col[which(fitc$padj <= 0.01)] = "red"
+I = order(factor(col, levels=c("#00000022","orange","red")))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+
+<<RiboTagTranslationEfficiencyNSCcountsHits,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col=rep("#00000022", nrow(res))
+col[which(res$significant == "*" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[4]
+
+I = order(factor(col, levels=c("#00000022",brewer.pal(4,"RdBu")[c(2,3,1,4)])))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+<<RiboTagTranslationEfficiencyNSCGSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fgup = row.names(res)[which(res$significant != "" & res$log2FoldChange > 0)]
+fgdown = row.names(res)[which(res$significant != "" & res$log2FoldChange < 0)]
+bg = row.names(res)[which(!is.na(res$padj))]
+GSEAup = doGSEA(fgup,bg,ENSG2category, k=3)
+GSEAdown = doGSEA(fgdown,bg,ENSG2category, k=3)
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagTranslationEfficiencyNSCGSEAreport, echo=FALSE, results='hide'>>=
+hwriteGSEAreport(GSEAup, d = file.path(d, "GSEAup"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, enhanced translated proteins)",n),
+                 prefix = "transEfficiencyUp-")
+
+hwriteGSEAreport(GSEAdown, d = file.path(d, "GSEAdown"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, repressed translated proteins)",n),
+                 prefix = "transEfficiencyDown-")
+@
+
+
+
+<<RiboTagTranslationEfficiencyNSCtable>>=
+res2 = res[order(factor(res$significant, levels=c("**","*","")),
+                sign(-res$log2FoldChange),res$symbol),]
+res2$UnspecBinders = ""
+res2$UnspecBinders[row.names(res2) %in% names(UnspecBinders)] = "UnspecBinder"
+write.table(res2, file=file.path(d, "resulttable.txt"), sep="\t", quote=FALSE)
+page = openPage(file.path(d,"resulttable.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s); result table",n),
+       heading=1, page=page)
+hwrite("** = 1% FDR; * = 10% FDR",page=page,br=TRUE)
+col = rep("",nrow(res))
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange > 0)] =
+  brewer.pal(3,"Pastel1")[1]
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange < 0)] =
+  brewer.pal(3,"Pastel1")[2]
+hwrite(as.data.frame(res2), row.bgcolor=col, page=page)
+closePage(page, splash=FALSE)
+@
+
+<<RiboTagTranslationEfficiencyNSCwebpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s)",n), heading=1, 
+       page=page)
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+# hwrite("K-means clustering of high abundant genes", page=page, heading=3)
+# hwrite("Genes with high abundance show a bi-modal distribution. The genes in this range are clustered and the red cluster is used to estimate the size factors.", page=page, br=TRUE)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.png",n,1:2),ncol=2),
+#             link=matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.pdf",n,1:2),ncol=2),
+#             page=page,br=TRUE)
+# K = length(A)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.png",n,1:K),ncol=K),
+#             link=matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.pdf",n,1:K),ncol=K),
+#             page=page,br=TRUE)
+hwrite("The estimated size factors.", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%ssizefactors-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%ssizefactors-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("Unspecific binders (enriched in control compared to total RNA).", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("MA plots and scatter plots of normalized read counts (log2)", page=page, heading=3)
+hwrite("Red dots are significantly different in RiboTag compared to TotalRNA and Control.", page=page, br=TRUE)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.png",n,1:2),ncol=2),
+            link=matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.pdf",n,1:2),ncol=2),
+            page=page,br=TRUE)
+
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+hwrite("The number of genes that are significantly enriched over total RNA and control (The number of genes with enhanced or repressend translation).", page=page, br=TRUE)
+t = table(res$significant, sign(res$log2FoldChange))
+class(t) = NULL
+hwrite(t,page=page, br=TRUE)
+hwrite("result table", page=page, heading=3)
+hwrite("result table (html)", link="resulttable.html", page=page, br=TRUE)
+hwrite("result table (txt)", link="resulttable.txt", page=page, br=TRUE)
+hwrite("gene set enrichment analysis", page=page, heading=3)
+hwrite("GSEA up-regulated", link=file.path("GSEAup","index.html"), page=page, br=TRUE)
+hwrite("GSEA down-regulated", link=file.path("GSEAdown","index.html"), page=page, br=TRUE)
+
+# hwrite("Analysis of variance of RiboTag data.", page=page, heading=3)
+# hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sExpVar-1.png",n),ncol=1),
+#             link=sprintf("RiboTagTranslationEfficiency%sExpVar-1.pdf",n),
+#             page=page,br=TRUE)
+# 
+closePage(page, splash=FALSE)
+@
+
+
+\subsection{Filter unspecific binders in ENB}
+Create an output directory.
+<<RiboTagFilterUnspecENBdir>>=
+n = "ENB"
+d = file.path("result","TranslationEfficiency", n)
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","..","mainmenu.html")
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagFilterUnspecFigDirENB,include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+A DESeq dataset is created that contains the respective samples.
+
+<<RiboTagFilterUnspecENBmatrix,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+Design = DesignTranslationEfficiency
+EC_all <- expectedCounts[,SamplesTranslationEfficiency[[n]]]
+SL <- SampleList[SamplesTranslationEfficiency[[n]],]
+# dds_all <- DESeqDataSetFromMatrix(
+#     countData = expectedCounts[,SamplesTranslationEfficiency[[n]]],
+#     colData = SampleList[SamplesTranslationEfficiency[[n]],],
+#     design = ~ Type)
+# mcols(dds_all) = Anno
+# colData(dds_all)
+@
+
+Log counts are computed and plotted as a pairs plot.
+<<RiboTagTranslationEfficiencyENBcounts,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+I = which(rowMeans(log2(EC_all[,
+            SL$Type == "RNAseq"]+1)) >= 10 &
+            Anno$transript_type == "protein_coding")
+EC = EC_all[I,]
+# I = which(rowMeans(log2(counts(dds_all)[,
+#             colData(dds_all)$Type == "RNAseq"]+1)) >= 10 &
+#             mcols(dds_all)$transript_type == "protein_coding")
+# dds = dds_all[I,]
+
+C = log2(EC+1)
+Call = log2(EC_all+1)
+# C = log2(counts(dds)+1)
+# Call = log2(counts(dds_all)+1)
+lim = range(as.vector(C))
+pairs(C,pch=20,cex=0.5,col="#00000022",xlim=lim, ylim=lim)
+@
+
+%' Genes with high read counts show a bi-modal distribution when comparing RiboTag and control samples. These genes are clustered in two clusters. 
+%' 
+%' <<RiboTagFilterUnspecENBkmeans,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' A = which(dds$Type == "RIBOseq")
+%' B = which(dds$Type == "RIBOctr")
+%' I = which(rowMeans(C[,c(A,B)]) > 13)
+%' m = min(length(A),length(B))
+%' A = A[1:m]
+%' B = B[1:m]
+%' print(length(I))
+%' km = kmeans(C[I,A] - C[I,B],centers = 2)
+%' r = rowMeans(km$centers)
+%' if (r[1] > r[2]) {
+%'   km$cluster = ifelse(km$cluster == 1,2,1)
+%' }
+%' pairs(C[I,A] - C[I,B], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s; Difference Ribo - RiboCtrl",n))
+%' pairs(C[I,], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s",n))
+%' @
+
+%' <<RiboTagFilterUnspecENBdensity,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' for (i in seq_along(A)) {
+%'   plot(density(C[I,A[i]] - C[I,B[i]]), lwd=3, main=sprintf("%s; Difference Ribo - RiboCtrl",colnames(C[,A,drop=FALSE])[i]))
+%'   a = (C[I,A[i]] - C[I,B[i]])[km$cluster == 1]
+%'   b = (C[I,A[i]] - C[I,B[i]])[km$cluster == 2]
+%'   rug(a, col="red")
+%'   rug(b, col="blue")
+%' }
+%' @
+
+The genes in the cluster with lower read counts in the control sample are used to estimate the size factors.
+
+<<RiboTagTranslationEfficiencyENBsizefactors,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+s = sizeFactors(estimateSizeFactors(DESeqDataSetFromMatrix(
+    countData = round(EC), colData = SL, design = ~ Type),
+    controlGenes=which(rowMeans(log2(EC[,SL$Type == "RNAseq"]+1)) >= 13)))
+#sizeFactors(dds) = s
+p = par(mar=c(10,4,4,2)+0.1)
+barplot(s, main="estimates size factors",las=2)
+par(p)
+@
+
+The count data is normalized and unspecific binders are identified. Therefore, RiboControl samples are compared to total RNA samples. The genes that are significantly higher in RiboControl samples are potential unspecific binders of the tag. These genes are filtered as well.
+<<RiboTagTranslationEfficiencyENBFilterUnspecific,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+D = C
+m = log2(s)
+for (i in 1:ncol(EC)) {
+  D[,i] = D[,i] - m[i]
+}
+Dall = Call
+for (i in 1:ncol(EC)) {
+  Dall[,i] = Dall[,i] - m[i]
+}
+
+IR = which(SL$Type == "RIBOseq")
+IT = which(SL$Type == "RNAseq")
+IC = which(SL$Type == "RIBOctr")
+
+fitc = eBayes(lmFit(cbind(D[,IC[1]]-D[,IT[1]],D[,IC[2]]-D[,IT[2]])))
+padjc = p.adjust(fitc$p.value[,1],method="BH")
+lfcc = fitc$coefficients[,1]
+
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfcc,
+     pch=20,cex=0.7,col=ifelse(padjc < 0.01, "red","gray"),
+     xlab="log2 read counts (Total RNA)", ylab="log2 fold change")
+abline(h=0)
+
+UnspecBinders = which(padjc <= 0.01 & lfcc > 0)
+
+fitc$padj = padjc
+
+@
+
+To estimate the translation efficiency, the RiboTag data is modeled as a function of RiboControl and total RNA. 
+<<RiboTagTranslationEfficiencyENBmodel,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fit1 = list()
+for (i in 1:2) {
+  D2 = data.frame("Ribo" = D[,IR[i]], "Total" = D[,IT[i]], "ctrl" = D[,IC[i]])
+  fit1[[i]] = lm(Ribo ~ Total+ctrl, data=D2)
+  fit1[[i]]$anova = anova(fit1[[i]])
+  fit1[[i]]$expVar = fit1[[i]]$anova[,"Sum Sq",drop=FALSE]
+  fit1[[i]]$expVar = fit1[[i]]$expVar/sum(fit1[[i]]$expVar)
+  D2all = data.frame("Ribo" = Dall[,IR[i]], "Total" = Dall[,IT[i]], "ctrl" = Dall[,IC[i]], row.names = row.names(Dall))
+  p = predict(fit1[[i]],newdata = D2all)
+  fit1[[i]]$residualsAll = D2all$Ribo - p
+}
+
+R1 = fit1[[1]]$residuals
+R2 = fit1[[2]]$residuals
+R1all = fit1[[1]]$residualsAll
+R2all = fit1[[2]]$residualsAll
+R1all = R1all - shorth(R1,na.rm=TRUE)
+R2all = R2all - shorth(R2,na.rm=TRUE)
+R1 = R1 - shorth(R1,na.rm=TRUE)
+R2 = R2 - shorth(R2,na.rm=TRUE)
+
+
+D2 = data.frame("R1" = R1, "R2" = R2)
+fit2 = lm(data=D2)
+fit2$anova = anova(fit2)
+fit2$expVar = fit2$anova[,"Sum Sq",drop=FALSE]
+fit2$expVar = fit2$expVar/sum(fit2$expVar)
+
+fita = eBayes(lmFit(cbind(R1,R2)))
+padja = p.adjust(fita$p.value[,1],method="BH")
+lfca = fita$coefficients[,1]
+@
+
+<<RiboTagTranslationEfficiencyENBExpVar,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+ExpVar = t(as.matrix(cbind(rep1=fit1[[1]]$expVar,rep2=fit1[[2]]$expVar)))
+ExpVar = cbind(ExpVar[,1:2],ExpVar[,3] * fit2$expVar[1,1], ExpVar[,3] * fit2$expVar[2,1])
+colnames(ExpVar) = c("total RNA", "background", "transl. eff.", "residuals")
+row.names(ExpVar) = paste0("rep ",1:2)
+# barplot(ExpVar,beside=TRUE,
+#         legend=TRUE,ylab="explained variance")
+# barplot(t(ExpVar),beside=FALSE,
+#         legend=TRUE,ylab="explained variance",xlim=c(0,4))
+@
+
+<<RiboTagTranslationEfficiencyENBaddNames,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+res = as.data.frame(Anno[row.names(EC),])
+#res$symbol[is.na(res$symbol)] = row.names(res)[is.na(res$symbol)]
+
+res$pval = fita$p.value[,1]
+res$padj = padja
+res$log2FoldChange = lfca
+res$significant = ""
+res$significant[which(padja <= 0.1)] = "*"
+res$significant[which(padja <= 0.01)] = "**"
+attr(res,"log2FC") = rowMeans(cbind(R1all,R2all))
+attr(res,"log2total") = rowMeans(Dall[,IT])
+attr(res,"log2FCsd") = rowSds(cbind(R1all,R2all))
+attr(res,"log2TotalSD") = rowSds(Dall[,IT])
+@
+
+The R/Bioconductor package limma shrinks the standard deviation of each gene towards a global estimate of standard deviation along all genes. In the case of large outliers, this can result in spurious hits. To avoid these, genes with standard deviation larger than the absolute value of the log-fold change are not regarded as significant.
+<<RiboTagTranslationEfficiencyENBfilterHighSigma,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+K = which(res$significant != "" & (fita$sigma > abs(fita$coefficients[,1])))
+
+write.table(res[K,], sep="\t", file = file.path(d, "filteredGenes.txt"), quote=FALSE)
+
+res$padj[K] = NA
+res$significant[K] = ""
+@
+
+<<RiboTagTranslationEfficiencyENBMAplot,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+col=rep("gray", length(padja))
+col[which(res$significant == "*" & lfca > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & lfca < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & lfca > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & lfca < 0)] = brewer.pal(4,"RdBu")[4]
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfca,
+     pch=20,cex=0.7,col=col,
+     xlab="log2 read counts (total RNA)", ylab="translation efficiency [log2]")
+abline(h=0)
+
+plot(R1,R2,
+     pch=20,cex=0.7,col=col,
+     xlab="translation efficiency [log2] (rep. 1)", 
+     ylab="translation efficiency [log2] (rep. 2)",
+     xlim=c(-4,4),ylim=c(-4,4))
+abline(h=0,v=0)
+text(-3.8,3.8,paste0("R = ",format(cor(R1,R2,use="pairwise.complete"),digits=2)),adj = c(0,1))
+@
+
+The data is saved.
+
+<<RiboTagTranslationEfficiencyENBsave,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+save(EC, file=file.path(d, "EC.rda"))
+save(res, file=file.path(d, "res.rda"))
+save(fitc, file=file.path(d, "fitc.rda"))
+save(ExpVar, file=file.path(d, "ExpVar.rda"))
+@
+
+
+<<RiboTagTranslationEfficiencyENBcountsUnspec,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col = rep("#00000022", dim(C)[1])
+col[which(fitc$padj <= 0.1)] = "orange"
+col[which(fitc$padj <= 0.01)] = "red"
+I = order(factor(col, levels=c("#00000022","orange","red")))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+
+<<RiboTagTranslationEfficiencyENBcountsHits,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col=rep("#00000022", nrow(res))
+col[which(res$significant == "*" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[4]
+
+I = order(factor(col, levels=c("#00000022",brewer.pal(4,"RdBu")[c(2,3,1,4)])))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+<<RiboTagTranslationEfficiencyENBGSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fgup = row.names(res)[which(res$significant != "" & res$log2FoldChange > 0)]
+fgdown = row.names(res)[which(res$significant != "" & res$log2FoldChange < 0)]
+bg = row.names(res)[which(!is.na(res$padj))]
+GSEAup = doGSEA(fgup,bg,ENSG2category, k=3)
+GSEAdown = doGSEA(fgdown,bg,ENSG2category, k=3)
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagTranslationEfficiencyENBGSEAreport, echo=FALSE, results='hide'>>=
+hwriteGSEAreport(GSEAup, d = file.path(d, "GSEAup"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, enhanced translated proteins)",n),
+                 prefix = "transEfficiencyUp-")
+
+hwriteGSEAreport(GSEAdown, d = file.path(d, "GSEAdown"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, repressed translated proteins)",n),
+                 prefix = "transEfficiencyDown-")
+@
+
+
+
+<<RiboTagTranslationEfficiencyENBtable>>=
+res2 = res[order(factor(res$significant, levels=c("**","*","")),
+                sign(-res$log2FoldChange),res$symbol),]
+res2$UnspecBinders = ""
+res2$UnspecBinders[row.names(res2) %in% names(UnspecBinders)] = "UnspecBinder"
+write.table(res2, file=file.path(d, "resulttable.txt"), sep="\t", quote=FALSE)
+page = openPage(file.path(d,"resulttable.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s); result table",n),
+       heading=1, page=page)
+hwrite("** = 1% FDR; * = 10% FDR",page=page,br=TRUE)
+col = rep("",nrow(res))
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange > 0)] =
+  brewer.pal(3,"Pastel1")[1]
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange < 0)] =
+  brewer.pal(3,"Pastel1")[2]
+hwrite(as.data.frame(res2), row.bgcolor=col, page=page)
+closePage(page, splash=FALSE)
+@
+
+<<RiboTagTranslationEfficiencyENBwebpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s)",n), heading=1, 
+       page=page)
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+# hwrite("K-means clustering of high abundant genes", page=page, heading=3)
+# hwrite("Genes with high abundance show a bi-modal distribution. The genes in this range are clustered and the red cluster is used to estimate the size factors.", page=page, br=TRUE)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.png",n,1:2),ncol=2),
+#             link=matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.pdf",n,1:2),ncol=2),
+#             page=page,br=TRUE)
+# K = length(A)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.png",n,1:K),ncol=K),
+#             link=matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.pdf",n,1:K),ncol=K),
+#             page=page,br=TRUE)
+hwrite("The estimated size factors.", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%ssizefactors-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%ssizefactors-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("Unspecific binders (enriched in control compared to total RNA).", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("MA plots and scatter plots of normalized read counts (log2)", page=page, heading=3)
+hwrite("Red dots are significantly different in RiboTag compared to TotalRNA and Control.", page=page, br=TRUE)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.png",n,1:2),ncol=2),
+            link=matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.pdf",n,1:2),ncol=2),
+            page=page,br=TRUE)
+
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+hwrite("The number of genes that are significantly enriched over total RNA and control (The number of genes with enhanced or repressend translation).", page=page, br=TRUE)
+t = table(res$significant, sign(res$log2FoldChange))
+class(t) = NULL
+hwrite(t,page=page, br=TRUE)
+hwrite("result table", page=page, heading=3)
+hwrite("result table (html)", link="resulttable.html", page=page, br=TRUE)
+hwrite("result table (txt)", link="resulttable.txt", page=page, br=TRUE)
+hwrite("gene set enrichment analysis", page=page, heading=3)
+hwrite("GSEA up-regulated", link=file.path("GSEAup","index.html"), page=page, br=TRUE)
+hwrite("GSEA down-regulated", link=file.path("GSEAdown","index.html"), page=page, br=TRUE)
+
+# hwrite("Analysis of variance of RiboTag data.", page=page, heading=3)
+# hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sExpVar-1.png",n),ncol=1),
+#             link=sprintf("RiboTagTranslationEfficiency%sExpVar-1.pdf",n),
+#             page=page,br=TRUE)
+# 
+closePage(page, splash=FALSE)
+@
+
+
+\subsection{Filter unspecific binders in LNB}
+Create an output directory.
+<<RiboTagFilterUnspecLNBdir>>=
+n = "LNB"
+d = file.path("result","TranslationEfficiency", n)
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","..","mainmenu.html")
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagFilterUnspecFigDirLNB,include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+A DESeq dataset is created that contains the respective samples.
+
+<<RiboTagFilterUnspecLNBmatrix,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+Design = DesignTranslationEfficiency
+EC_all <- expectedCounts[,SamplesTranslationEfficiency[[n]]]
+SL <- SampleList[SamplesTranslationEfficiency[[n]],]
+# dds_all <- DESeqDataSetFromMatrix(
+#     countData = expectedCounts[,SamplesTranslationEfficiency[[n]]],
+#     colData = SampleList[SamplesTranslationEfficiency[[n]],],
+#     design = ~ Type)
+# mcols(dds_all) = Anno
+# colData(dds_all)
+@
+
+Log counts are computed and plotted as a pairs plot.
+<<RiboTagTranslationEfficiencyLNBcounts,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+I = which(rowMeans(log2(EC_all[,
+            SL$Type == "RNAseq"]+1)) >= 10 &
+            Anno$transript_type == "protein_coding")
+EC = EC_all[I,]
+# I = which(rowMeans(log2(counts(dds_all)[,
+#             colData(dds_all)$Type == "RNAseq"]+1)) >= 10 &
+#             mcols(dds_all)$transript_type == "protein_coding")
+# dds = dds_all[I,]
+
+C = log2(EC+1)
+Call = log2(EC_all+1)
+# C = log2(counts(dds)+1)
+# Call = log2(counts(dds_all)+1)
+lim = range(as.vector(C))
+pairs(C,pch=20,cex=0.5,col="#00000022",xlim=lim, ylim=lim)
+@
+
+%' Genes with high read counts show a bi-modal distribution when comparing RiboTag and control samples. These genes are clustered in two clusters. 
+%' 
+%' <<RiboTagFilterUnspecLNBkmeans,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' A = which(dds$Type == "RIBOseq")
+%' B = which(dds$Type == "RIBOctr")
+%' I = which(rowMeans(C[,c(A,B)]) > 13)
+%' m = min(length(A),length(B))
+%' A = A[1:m]
+%' B = B[1:m]
+%' print(length(I))
+%' km = kmeans(C[I,A] - C[I,B],centers = 2)
+%' r = rowMeans(km$centers)
+%' if (r[1] > r[2]) {
+%'   km$cluster = ifelse(km$cluster == 1,2,1)
+%' }
+%' pairs(C[I,A] - C[I,B], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s; Difference Ribo - RiboCtrl",n))
+%' pairs(C[I,], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s",n))
+%' @
+
+%' <<RiboTagFilterUnspecLNBdensity,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' for (i in seq_along(A)) {
+%'   plot(density(C[I,A[i]] - C[I,B[i]]), lwd=3, main=sprintf("%s; Difference Ribo - RiboCtrl",colnames(C[,A,drop=FALSE])[i]))
+%'   a = (C[I,A[i]] - C[I,B[i]])[km$cluster == 1]
+%'   b = (C[I,A[i]] - C[I,B[i]])[km$cluster == 2]
+%'   rug(a, col="red")
+%'   rug(b, col="blue")
+%' }
+%' @
+
+The genes in the cluster with lower read counts in the control sample are used to estimate the size factors.
+
+<<RiboTagTranslationEfficiencyLNBsizefactors,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+s = sizeFactors(estimateSizeFactors(DESeqDataSetFromMatrix(
+    countData = round(EC), colData = SL, design = ~ Type),
+    controlGenes=which(rowMeans(log2(EC[,SL$Type == "RNAseq"]+1)) >= 13)))
+#sizeFactors(dds) = s
+p = par(mar=c(10,4,4,2)+0.1)
+barplot(s, main="estimates size factors",las=2)
+par(p)
+@
+
+The count data is normalized and unspecific binders are identified. Therefore, RiboControl samples are compared to total RNA samples. The genes that are significantly higher in RiboControl samples are potential unspecific binders of the tag. These genes are filtered as well.
+<<RiboTagTranslationEfficiencyLNBFilterUnspecific,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+D = C
+m = log2(s)
+for (i in 1:ncol(EC)) {
+  D[,i] = D[,i] - m[i]
+}
+Dall = Call
+for (i in 1:ncol(EC)) {
+  Dall[,i] = Dall[,i] - m[i]
+}
+
+IR = which(SL$Type == "RIBOseq")
+IT = which(SL$Type == "RNAseq")
+IC = which(SL$Type == "RIBOctr")
+
+fitc = eBayes(lmFit(cbind(D[,IC[1]]-D[,IT[1]],D[,IC[2]]-D[,IT[2]])))
+padjc = p.adjust(fitc$p.value[,1],method="BH")
+lfcc = fitc$coefficients[,1]
+
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfcc,
+     pch=20,cex=0.7,col=ifelse(padjc < 0.01, "red","gray"),
+     xlab="log2 read counts (Total RNA)", ylab="log2 fold change")
+abline(h=0)
+
+UnspecBinders = which(padjc <= 0.01 & lfcc > 0)
+
+fitc$padj = padjc
+
+@
+
+To estimate the translation efficiency, the RiboTag data is modeled as a function of RiboControl and total RNA. 
+<<RiboTagTranslationEfficiencyLNBmodel,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fit1 = list()
+for (i in 1:2) {
+  D2 = data.frame("Ribo" = D[,IR[i]], "Total" = D[,IT[i]], "ctrl" = D[,IC[i]])
+  fit1[[i]] = lm(Ribo ~ Total+ctrl, data=D2)
+  fit1[[i]]$anova = anova(fit1[[i]])
+  fit1[[i]]$expVar = fit1[[i]]$anova[,"Sum Sq",drop=FALSE]
+  fit1[[i]]$expVar = fit1[[i]]$expVar/sum(fit1[[i]]$expVar)
+  D2all = data.frame("Ribo" = Dall[,IR[i]], "Total" = Dall[,IT[i]], "ctrl" = Dall[,IC[i]], row.names = row.names(Dall))
+  p = predict(fit1[[i]],newdata = D2all)
+  fit1[[i]]$residualsAll = D2all$Ribo - p
+}
+
+R1 = fit1[[1]]$residuals
+R2 = fit1[[2]]$residuals
+R1all = fit1[[1]]$residualsAll
+R2all = fit1[[2]]$residualsAll
+R1all = R1all - shorth(R1,na.rm=TRUE)
+R2all = R2all - shorth(R2,na.rm=TRUE)
+R1 = R1 - shorth(R1,na.rm=TRUE)
+R2 = R2 - shorth(R2,na.rm=TRUE)
+
+
+D2 = data.frame("R1" = R1, "R2" = R2)
+fit2 = lm(data=D2)
+fit2$anova = anova(fit2)
+fit2$expVar = fit2$anova[,"Sum Sq",drop=FALSE]
+fit2$expVar = fit2$expVar/sum(fit2$expVar)
+
+fita = eBayes(lmFit(cbind(R1,R2)))
+padja = p.adjust(fita$p.value[,1],method="BH")
+lfca = fita$coefficients[,1]
+@
+
+<<RiboTagTranslationEfficiencyLNBExpVar,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+ExpVar = t(as.matrix(cbind(rep1=fit1[[1]]$expVar,rep2=fit1[[2]]$expVar)))
+ExpVar = cbind(ExpVar[,1:2],ExpVar[,3] * fit2$expVar[1,1], ExpVar[,3] * fit2$expVar[2,1])
+colnames(ExpVar) = c("total RNA", "background", "transl. eff.", "residuals")
+row.names(ExpVar) = paste0("rep ",1:2)
+# barplot(ExpVar,beside=TRUE,
+#         legend=TRUE,ylab="explained variance")
+# barplot(t(ExpVar),beside=FALSE,
+#         legend=TRUE,ylab="explained variance",xlim=c(0,4))
+@
+
+<<RiboTagTranslationEfficiencyLNBaddNames,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+res = as.data.frame(Anno[row.names(EC),])
+#res$symbol[is.na(res$symbol)] = row.names(res)[is.na(res$symbol)]
+
+res$pval = fita$p.value[,1]
+res$padj = padja
+res$log2FoldChange = lfca
+res$significant = ""
+res$significant[which(padja <= 0.1)] = "*"
+res$significant[which(padja <= 0.01)] = "**"
+attr(res,"log2FC") = rowMeans(cbind(R1all,R2all))
+attr(res,"log2total") = rowMeans(Dall[,IT])
+attr(res,"log2FCsd") = rowSds(cbind(R1all,R2all))
+attr(res,"log2TotalSD") = rowSds(Dall[,IT])
+@
+
+The R/Bioconductor package limma shrinks the standard deviation of each gene towards a global estimate of standard deviation along all genes. In the case of large outliers, this can result in spurious hits. To avoid these, genes with standard deviation larger than the absolute value of the log-fold change are not regarded as significant.
+<<RiboTagTranslationEfficiencyLNBfilterHighSigma,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+K = which(res$significant != "" & (fita$sigma > abs(fita$coefficients[,1])))
+
+write.table(res[K,], sep="\t", file = file.path(d, "filteredGenes.txt"), quote=FALSE)
+
+res$padj[K] = NA
+res$significant[K] = ""
+@
+
+<<RiboTagTranslationEfficiencyLNBMAplot,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+col=rep("gray", length(padja))
+col[which(res$significant == "*" & lfca > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & lfca < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & lfca > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & lfca < 0)] = brewer.pal(4,"RdBu")[4]
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfca,
+     pch=20,cex=0.7,col=col,
+     xlab="log2 read counts (total RNA)", ylab="translation efficiency [log2]")
+abline(h=0)
+
+plot(R1,R2,
+     pch=20,cex=0.7,col=col,
+     xlab="translation efficiency [log2] (rep. 1)", 
+     ylab="translation efficiency [log2] (rep. 2)",
+     xlim=c(-4,4),ylim=c(-4,4))
+abline(h=0,v=0)
+text(-3.8,3.8,paste0("R = ",format(cor(R1,R2,use="pairwise.complete"),digits=2)),adj = c(0,1))
+@
+
+The data is saved.
+
+<<RiboTagTranslationEfficiencyLNBsave,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+save(EC, file=file.path(d, "EC.rda"))
+save(res, file=file.path(d, "res.rda"))
+save(fitc, file=file.path(d, "fitc.rda"))
+save(ExpVar, file=file.path(d, "ExpVar.rda"))
+@
+
+
+<<RiboTagTranslationEfficiencyLNBcountsUnspec,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col = rep("#00000022", dim(C)[1])
+col[which(fitc$padj <= 0.1)] = "orange"
+col[which(fitc$padj <= 0.01)] = "red"
+I = order(factor(col, levels=c("#00000022","orange","red")))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+
+<<RiboTagTranslationEfficiencyLNBcountsHits,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col=rep("#00000022", nrow(res))
+col[which(res$significant == "*" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[4]
+
+I = order(factor(col, levels=c("#00000022",brewer.pal(4,"RdBu")[c(2,3,1,4)])))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+<<RiboTagTranslationEfficiencyLNBGSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fgup = row.names(res)[which(res$significant != "" & res$log2FoldChange > 0)]
+fgdown = row.names(res)[which(res$significant != "" & res$log2FoldChange < 0)]
+bg = row.names(res)[which(!is.na(res$padj))]
+GSEAup = doGSEA(fgup,bg,ENSG2category, k=3)
+GSEAdown = doGSEA(fgdown,bg,ENSG2category, k=3)
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagTranslationEfficiencyLNBGSEAreport, echo=FALSE, results='hide'>>=
+hwriteGSEAreport(GSEAup, d = file.path(d, "GSEAup"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, enhanced translated proteins)",n),
+                 prefix = "transEfficiencyUp-")
+
+hwriteGSEAreport(GSEAdown, d = file.path(d, "GSEAdown"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, repressed translated proteins)",n),
+                 prefix = "transEfficiencyDown-")
+@
+
+
+
+<<RiboTagTranslationEfficiencyLNBtable>>=
+res2 = res[order(factor(res$significant, levels=c("**","*","")),
+                sign(-res$log2FoldChange),res$symbol),]
+res2$UnspecBinders = ""
+res2$UnspecBinders[row.names(res2) %in% names(UnspecBinders)] = "UnspecBinder"
+write.table(res2, file=file.path(d, "resulttable.txt"), sep="\t", quote=FALSE)
+page = openPage(file.path(d,"resulttable.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s); result table",n),
+       heading=1, page=page)
+hwrite("** = 1% FDR; * = 10% FDR",page=page,br=TRUE)
+col = rep("",nrow(res))
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange > 0)] =
+  brewer.pal(3,"Pastel1")[1]
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange < 0)] =
+  brewer.pal(3,"Pastel1")[2]
+hwrite(as.data.frame(res2), row.bgcolor=col, page=page)
+closePage(page, splash=FALSE)
+@
+
+<<RiboTagTranslationEfficiencyLNBwebpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s)",n), heading=1, 
+       page=page)
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+# hwrite("K-means clustering of high abundant genes", page=page, heading=3)
+# hwrite("Genes with high abundance show a bi-modal distribution. The genes in this range are clustered and the red cluster is used to estimate the size factors.", page=page, br=TRUE)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.png",n,1:2),ncol=2),
+#             link=matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.pdf",n,1:2),ncol=2),
+#             page=page,br=TRUE)
+# K = length(A)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.png",n,1:K),ncol=K),
+#             link=matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.pdf",n,1:K),ncol=K),
+#             page=page,br=TRUE)
+hwrite("The estimated size factors.", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%ssizefactors-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%ssizefactors-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("Unspecific binders (enriched in control compared to total RNA).", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("MA plots and scatter plots of normalized read counts (log2)", page=page, heading=3)
+hwrite("Red dots are significantly different in RiboTag compared to TotalRNA and Control.", page=page, br=TRUE)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.png",n,1:2),ncol=2),
+            link=matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.pdf",n,1:2),ncol=2),
+            page=page,br=TRUE)
+
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+hwrite("The number of genes that are significantly enriched over total RNA and control (The number of genes with enhanced or repressend translation).", page=page, br=TRUE)
+t = table(res$significant, sign(res$log2FoldChange))
+class(t) = NULL
+hwrite(t,page=page, br=TRUE)
+hwrite("result table", page=page, heading=3)
+hwrite("result table (html)", link="resulttable.html", page=page, br=TRUE)
+hwrite("result table (txt)", link="resulttable.txt", page=page, br=TRUE)
+hwrite("gene set enrichment analysis", page=page, heading=3)
+hwrite("GSEA up-regulated", link=file.path("GSEAup","index.html"), page=page, br=TRUE)
+hwrite("GSEA down-regulated", link=file.path("GSEAdown","index.html"), page=page, br=TRUE)
+
+# hwrite("Analysis of variance of RiboTag data.", page=page, heading=3)
+# hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sExpVar-1.png",n),ncol=1),
+#             link=sprintf("RiboTagTranslationEfficiency%sExpVar-1.pdf",n),
+#             page=page,br=TRUE)
+# 
+closePage(page, splash=FALSE)
+@
+
+
+\subsection{Filter unspecific binders in NEURON}
+Create an output directory.
+<<RiboTagFilterUnspecNEURONdir>>=
+n = "NEURON"
+d = file.path("result","TranslationEfficiency", n)
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","..","mainmenu.html")
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagFilterUnspecFigDirNEURON,include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+A DESeq dataset is created that contains the respective samples.
+
+<<RiboTagFilterUnspecNEURONmatrix,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+Design = DesignTranslationEfficiency
+EC_all <- expectedCounts[,SamplesTranslationEfficiency[[n]]]
+SL <- SampleList[SamplesTranslationEfficiency[[n]],]
+# dds_all <- DESeqDataSetFromMatrix(
+#     countData = expectedCounts[,SamplesTranslationEfficiency[[n]]],
+#     colData = SampleList[SamplesTranslationEfficiency[[n]],],
+#     design = ~ Type)
+# mcols(dds_all) = Anno
+# colData(dds_all)
+@
+
+Log counts are computed and plotted as a pairs plot.
+<<RiboTagTranslationEfficiencyNEURONcounts,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+I = which(rowMeans(log2(EC_all[,
+            SL$Type == "RNAseq"]+1)) >= 10 &
+            Anno$transript_type == "protein_coding")
+EC = EC_all[I,]
+# I = which(rowMeans(log2(counts(dds_all)[,
+#             colData(dds_all)$Type == "RNAseq"]+1)) >= 10 &
+#             mcols(dds_all)$transript_type == "protein_coding")
+# dds = dds_all[I,]
+
+C = log2(EC+1)
+Call = log2(EC_all+1)
+# C = log2(counts(dds)+1)
+# Call = log2(counts(dds_all)+1)
+lim = range(as.vector(C))
+pairs(C,pch=20,cex=0.5,col="#00000022",xlim=lim, ylim=lim)
+@
+
+%' Genes with high read counts show a bi-modal distribution when comparing RiboTag and control samples. These genes are clustered in two clusters. 
+%' 
+%' <<RiboTagFilterUnspecNEURONkmeans,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' A = which(dds$Type == "RIBOseq")
+%' B = which(dds$Type == "RIBOctr")
+%' I = which(rowMeans(C[,c(A,B)]) > 13)
+%' m = min(length(A),length(B))
+%' A = A[1:m]
+%' B = B[1:m]
+%' print(length(I))
+%' km = kmeans(C[I,A] - C[I,B],centers = 2)
+%' r = rowMeans(km$centers)
+%' if (r[1] > r[2]) {
+%'   km$cluster = ifelse(km$cluster == 1,2,1)
+%' }
+%' pairs(C[I,A] - C[I,B], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s; Difference Ribo - RiboCtrl",n))
+%' pairs(C[I,], col=ifelse(km$cluster == 1, "red", "blue"),
+%'       main=sprintf("%s",n))
+%' @
+
+%' <<RiboTagFilterUnspecNEURONdensity,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+%' for (i in seq_along(A)) {
+%'   plot(density(C[I,A[i]] - C[I,B[i]]), lwd=3, main=sprintf("%s; Difference Ribo - RiboCtrl",colnames(C[,A,drop=FALSE])[i]))
+%'   a = (C[I,A[i]] - C[I,B[i]])[km$cluster == 1]
+%'   b = (C[I,A[i]] - C[I,B[i]])[km$cluster == 2]
+%'   rug(a, col="red")
+%'   rug(b, col="blue")
+%' }
+%' @
+
+The genes in the cluster with lower read counts in the control sample are used to estimate the size factors.
+
+<<RiboTagTranslationEfficiencyNEURONsizefactors,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+s = sizeFactors(estimateSizeFactors(DESeqDataSetFromMatrix(
+    countData = round(EC), colData = SL, design = ~ Type),
+    controlGenes=which(rowMeans(log2(EC[,SL$Type == "RNAseq"]+1)) >= 13)))
+#sizeFactors(dds) = s
+p = par(mar=c(10,4,4,2)+0.1)
+barplot(s, main="estimates size factors",las=2)
+par(p)
+@
+
+The count data is normalized and unspecific binders are identified. Therefore, RiboControl samples are compared to total RNA samples. The genes that are significantly higher in RiboControl samples are potential unspecific binders of the tag. These genes are filtered as well.
+<<RiboTagTranslationEfficiencyNEURONFilterUnspecific,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+D = C
+m = log2(s)
+for (i in 1:ncol(EC)) {
+  D[,i] = D[,i] - m[i]
+}
+Dall = Call
+for (i in 1:ncol(EC)) {
+  Dall[,i] = Dall[,i] - m[i]
+}
+
+IR = which(SL$Type == "RIBOseq")
+IT = which(SL$Type == "RNAseq")
+IC = which(SL$Type == "RIBOctr")
+
+fitc = eBayes(lmFit(cbind(D[,IC[1]]-D[,IT[1]],D[,IC[2]]-D[,IT[2]])))
+padjc = p.adjust(fitc$p.value[,1],method="BH")
+lfcc = fitc$coefficients[,1]
+
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfcc,
+     pch=20,cex=0.7,col=ifelse(padjc < 0.01, "red","gray"),
+     xlab="log2 read counts (Total RNA)", ylab="log2 fold change")
+abline(h=0)
+
+UnspecBinders = which(padjc <= 0.01 & lfcc > 0)
+
+fitc$padj = padjc
+
+@
+
+To estimate the translation efficiency, the RiboTag data is modeled as a function of RiboControl and total RNA. 
+<<RiboTagTranslationEfficiencyNEURONmodel,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fit1 = list()
+for (i in 1:2) {
+  D2 = data.frame("Ribo" = D[,IR[i]], "Total" = D[,IT[i]], "ctrl" = D[,IC[i]])
+  fit1[[i]] = lm(Ribo ~ Total+ctrl, data=D2)
+  fit1[[i]]$anova = anova(fit1[[i]])
+  fit1[[i]]$expVar = fit1[[i]]$anova[,"Sum Sq",drop=FALSE]
+  fit1[[i]]$expVar = fit1[[i]]$expVar/sum(fit1[[i]]$expVar)
+  D2all = data.frame("Ribo" = Dall[,IR[i]], "Total" = Dall[,IT[i]], "ctrl" = Dall[,IC[i]], row.names = row.names(Dall))
+  p = predict(fit1[[i]],newdata = D2all)
+  fit1[[i]]$residualsAll = D2all$Ribo - p
+}
+
+R1 = fit1[[1]]$residuals
+R2 = fit1[[2]]$residuals
+R1all = fit1[[1]]$residualsAll
+R2all = fit1[[2]]$residualsAll
+R1all = R1all - shorth(R1,na.rm=TRUE)
+R2all = R2all - shorth(R2,na.rm=TRUE)
+R1 = R1 - shorth(R1,na.rm=TRUE)
+R2 = R2 - shorth(R2,na.rm=TRUE)
+
+
+D2 = data.frame("R1" = R1, "R2" = R2)
+fit2 = lm(data=D2)
+fit2$anova = anova(fit2)
+fit2$expVar = fit2$anova[,"Sum Sq",drop=FALSE]
+fit2$expVar = fit2$expVar/sum(fit2$expVar)
+
+fita = eBayes(lmFit(cbind(R1,R2)))
+padja = p.adjust(fita$p.value[,1],method="BH")
+lfca = fita$coefficients[,1]
+@
+
+<<RiboTagTranslationEfficiencyNEURONExpVar,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+ExpVar = t(as.matrix(cbind(rep1=fit1[[1]]$expVar,rep2=fit1[[2]]$expVar)))
+ExpVar = cbind(ExpVar[,1:2],ExpVar[,3] * fit2$expVar[1,1], ExpVar[,3] * fit2$expVar[2,1])
+colnames(ExpVar) = c("total RNA", "background", "transl. eff.", "residuals")
+row.names(ExpVar) = paste0("rep ",1:2)
+# barplot(ExpVar,beside=TRUE,
+#         legend=TRUE,ylab="explained variance")
+# barplot(t(ExpVar),beside=FALSE,
+#         legend=TRUE,ylab="explained variance",xlim=c(0,4))
+@
+
+<<RiboTagTranslationEfficiencyNEURONaddNames,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+res = as.data.frame(Anno[row.names(EC),])
+#res$symbol[is.na(res$symbol)] = row.names(res)[is.na(res$symbol)]
+
+res$pval = fita$p.value[,1]
+res$padj = padja
+res$log2FoldChange = lfca
+res$significant = ""
+res$significant[which(padja <= 0.1)] = "*"
+res$significant[which(padja <= 0.01)] = "**"
+attr(res,"log2FC") = rowMeans(cbind(R1all,R2all))
+attr(res,"log2total") = rowMeans(Dall[,IT])
+attr(res,"log2FCsd") = rowSds(cbind(R1all,R2all))
+attr(res,"log2TotalSD") = rowSds(Dall[,IT])
+@
+
+The R/Bioconductor package limma shrinks the standard deviation of each gene towards a global estimate of standard deviation along all genes. In the case of large outliers, this can result in spurious hits. To avoid these, genes with standard deviation larger than the absolute value of the log-fold change are not regarded as significant.
+<<RiboTagTranslationEfficiencyNEURONfilterHighSigma,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+K = which(res$significant != "" & (fita$sigma > abs(fita$coefficients[,1])))
+
+write.table(res[K,], sep="\t", file = file.path(d, "filteredGenes.txt"), quote=FALSE)
+
+res$padj[K] = NA
+res$significant[K] = ""
+@
+
+<<RiboTagTranslationEfficiencyNEURONMAplot,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+col=rep("gray", length(padja))
+col[which(res$significant == "*" & lfca > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & lfca < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & lfca > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & lfca < 0)] = brewer.pal(4,"RdBu")[4]
+plot(rowMeans(D[,SL$Type == "RNAseq"]),lfca,
+     pch=20,cex=0.7,col=col,
+     xlab="log2 read counts (total RNA)", ylab="translation efficiency [log2]")
+abline(h=0)
+
+plot(R1,R2,
+     pch=20,cex=0.7,col=col,
+     xlab="translation efficiency [log2] (rep. 1)", 
+     ylab="translation efficiency [log2] (rep. 2)",
+     xlim=c(-4,4),ylim=c(-4,4))
+abline(h=0,v=0)
+text(-3.8,3.8,paste0("R = ",format(cor(R1,R2,use="pairwise.complete"),digits=2)),adj = c(0,1))
+@
+
+The data is saved.
+
+<<RiboTagTranslationEfficiencyNEURONsave,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+save(EC, file=file.path(d, "EC.rda"))
+save(res, file=file.path(d, "res.rda"))
+save(fitc, file=file.path(d, "fitc.rda"))
+save(ExpVar, file=file.path(d, "ExpVar.rda"))
+@
+
+
+<<RiboTagTranslationEfficiencyNEURONcountsUnspec,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col = rep("#00000022", dim(C)[1])
+col[which(fitc$padj <= 0.1)] = "orange"
+col[which(fitc$padj <= 0.01)] = "red"
+I = order(factor(col, levels=c("#00000022","orange","red")))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+
+<<RiboTagTranslationEfficiencyNEURONcountsHits,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col=rep("#00000022", nrow(res))
+col[which(res$significant == "*" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$significant == "*" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$significant == "**" & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$significant == "**" & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[4]
+
+I = order(factor(col, levels=c("#00000022",brewer.pal(4,"RdBu")[c(2,3,1,4)])))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+<<RiboTagTranslationEfficiencyNEURONGSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fgup = row.names(res)[which(res$significant != "" & res$log2FoldChange > 0)]
+fgdown = row.names(res)[which(res$significant != "" & res$log2FoldChange < 0)]
+bg = row.names(res)[which(!is.na(res$padj))]
+GSEAup = doGSEA(fgup,bg,ENSG2category, k=3)
+GSEAdown = doGSEA(fgdown,bg,ENSG2category, k=3)
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagTranslationEfficiencyNEURONGSEAreport, echo=FALSE, results='hide'>>=
+hwriteGSEAreport(GSEAup, d = file.path(d, "GSEAup"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, enhanced translated proteins)",n),
+                 prefix = "transEfficiencyUp-")
+
+hwriteGSEAreport(GSEAdown, d = file.path(d, "GSEAdown"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, repressed translated proteins)",n),
+                 prefix = "transEfficiencyDown-")
+@
+
+
+
+<<RiboTagTranslationEfficiencyNEURONtable>>=
+res2 = res[order(factor(res$significant, levels=c("**","*","")),
+                sign(-res$log2FoldChange),res$symbol),]
+res2$UnspecBinders = ""
+res2$UnspecBinders[row.names(res2) %in% names(UnspecBinders)] = "UnspecBinder"
+write.table(res2, file=file.path(d, "resulttable.txt"), sep="\t", quote=FALSE)
+page = openPage(file.path(d,"resulttable.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s); result table",n),
+       heading=1, page=page)
+hwrite("** = 1% FDR; * = 10% FDR",page=page,br=TRUE)
+col = rep("",nrow(res))
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange > 0)] =
+  brewer.pal(3,"Pastel1")[1]
+col[which(res2$significant %in% c("*","**") & res2$log2FoldChange < 0)] =
+  brewer.pal(3,"Pastel1")[2]
+hwrite(as.data.frame(res2), row.bgcolor=col, page=page)
+closePage(page, splash=FALSE)
+@
+
+<<RiboTagTranslationEfficiencyNEURONwebpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Translation efficiency (%s)",n), heading=1, 
+       page=page)
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scounts-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+# hwrite("K-means clustering of high abundant genes", page=page, heading=3)
+# hwrite("Genes with high abundance show a bi-modal distribution. The genes in this range are clustered and the red cluster is used to estimate the size factors.", page=page, br=TRUE)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.png",n,1:2),ncol=2),
+#             link=matrix(sprintf("RiboTagFilterUnspec%skmeans-%d.pdf",n,1:2),ncol=2),
+#             page=page,br=TRUE)
+# K = length(A)
+# hwriteImage(matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.png",n,1:K),ncol=K),
+#             link=matrix(sprintf("RiboTagFilterUnspec%sdensity-%d.pdf",n,1:K),ncol=K),
+#             page=page,br=TRUE)
+hwrite("The estimated size factors.", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%ssizefactors-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%ssizefactors-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("Unspecific binders (enriched in control compared to total RNA).", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.png",n),ncol=1),
+            link=sprintf("RiboTagTranslationEfficiency%sFilterUnspecific-1.pdf",n),
+            page=page,br=TRUE)
+
+hwrite("MA plots and scatter plots of normalized read counts (log2)", page=page, heading=3)
+hwrite("Red dots are significantly different in RiboTag compared to TotalRNA and Control.", page=page, br=TRUE)
+hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.png",n,1:2),ncol=2),
+            link=matrix(sprintf("RiboTagTranslationEfficiency%sMAplot-%d.pdf",n,1:2),ncol=2),
+            page=page,br=TRUE)
+
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            link=sprintf("RiboTagTranslationEfficiency%scountsHits-1.png",n),
+            width=100,height=100,page=page,br=TRUE)
+
+hwrite("The number of genes that are significantly enriched over total RNA and control (The number of genes with enhanced or repressend translation).", page=page, br=TRUE)
+t = table(res$significant, sign(res$log2FoldChange))
+class(t) = NULL
+hwrite(t,page=page, br=TRUE)
+hwrite("result table", page=page, heading=3)
+hwrite("result table (html)", link="resulttable.html", page=page, br=TRUE)
+hwrite("result table (txt)", link="resulttable.txt", page=page, br=TRUE)
+hwrite("gene set enrichment analysis", page=page, heading=3)
+hwrite("GSEA up-regulated", link=file.path("GSEAup","index.html"), page=page, br=TRUE)
+hwrite("GSEA down-regulated", link=file.path("GSEAdown","index.html"), page=page, br=TRUE)
+
+# hwrite("Analysis of variance of RiboTag data.", page=page, heading=3)
+# hwriteImage(matrix(sprintf("RiboTagTranslationEfficiency%sExpVar-1.png",n),ncol=1),
+#             link=sprintf("RiboTagTranslationEfficiency%sExpVar-1.pdf",n),
+#             page=page,br=TRUE)
+# 
+closePage(page, splash=FALSE)
+@
+

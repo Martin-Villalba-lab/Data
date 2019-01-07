@@ -1,0 +1,195 @@
+
+\subsection{Differential ribosome tag signal in {{n}}}
+Create an output directory.
+<<RiboTagDiffRiboTag{{type}}{{n}}dir>>=
+n = "{{n}}"
+type="{{type}}"
+Samples = Samples{{type}}
+filter = "{{filter}}"
+d = file.path("result",type, n)
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","..","mainmenu.html")
+
+load(file.path("data","ENSG2category.rda"))
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagDiffRiboTag{{type}}FigDir{{n}},include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+The count matrix is copied for convenience.
+<<RiboTagDiffRiboTag{{type}}FilterMatrix{{n}}>>=
+Design = DesignRIBOseq
+X = rawCounts[,Samples[[n]]]
+@
+
+%' The count data is filtered by replacing some rows by 0.
+%' <<RiboTagDiffRiboTag{{type}}Filter{{n}}>>=
+%' if (filter == "none") {
+%'   outputfilter = "No filtering applied."
+%'   print(outputfilter)
+%' } else {
+%'   S = unique(as.character(colData[Samples[[n]],"sample"]))
+%'   isBinder = list()
+%'   for (s in S) {
+%'     load(file.path("result","filterUnspecificBinders",s,"res.rda"))
+%'     isBinder[[s]] = res$significant %in% c("*","**")
+%'   }
+%'   outputfilter = paste(capture.output(print(table(isBinder))),collapse="\n")
+%'   print(table(isBinder))
+%'   isBinder = apply(do.call(cbind, isBinder),1,any)
+%'   X[!isBinder,] = 0L
+%' }
+%' @
+
+A DESeq dataset is created that contains the respective samples.
+
+<<RiboTagDiffRiboTag{{type}}{{n}}matrix,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+dds <- DESeqDataSetFromMatrix(countData = X,
+                              colData = SampleList[Samples[[n]],],
+                              design = Design[[n]])
+colData(dds)
+@
+
+Log counts are computed and plotted as a pairs plot.
+<<RiboTagDiffRiboTag{{type}}{{n}}counts,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+C = counts(dds)
+C = log2(C+1)
+lim = range(as.vector(C))
+pairs(C,pch=20,cex=0.5,xlim=lim, ylim=lim,col="#00000022")
+@
+
+The standard DESeq2 workflow is used to for analysis differential ribosome tag signal. Size factors are estimated using all genes. Subsequently, dispersion is estimated and p-values are computed by a Wald test.
+
+<<RiboTagDiffRiboTag{{type}}{{n}}DESeq,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+dds = DESeq(dds)
+res = results(dds)
+@
+
+%' A PCA plot is generated for exploratory analysis.
+%' 
+%' <<RiboTagDiffRiboTag{{type}}{{n}}PCA,fig.width=7,fig.height=7>>=
+%' rld <- rlog(dds, blind=FALSE)
+%' plotPCA(rld, intgroup = "sample")
+%' @
+
+The size factors are plotted.
+  
+<<RiboTagDiffRiboTag{{type}}{{n}}sizefactors,resize.width="0.32\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+p = par(mar=c(10,4,4,2)+0.1)
+barplot(sizeFactors(dds), main="estimates size factors",las=2)
+par(p)
+@
+
+An MA plot shows in red the genes that are enriched by the RiboTag pull-down. For comparison, the second plot shows the genes that were used to estimate the size factors.
+<<RiboTagDiffRiboTag{{type}}{{n}}MAplot,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+plotMA(res, ylim=c(-5,5), ylab=sprintf("log fold change (%s)",n), main=n)
+@
+
+<<RiboTagDiffRiboTag{{type}}{{n}}addNames,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+load(file.path("data","ENSGannotation.rda"))
+res$symbol = ENSGannotation[row.names(res),"name"]
+res$symbol[is.na(res$symbol)] = row.names(res)[is.na(res$symbol)]
+
+res$significant = ""
+res$significant[which(res$padj <= 0.1)] = "*"
+res$significant[which(res$padj <= 0.01)] = "**"
+@
+
+The data is saved.
+<<RiboTagDiffRiboTag{{type}}{{n}}save,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+save(dds, file=file.path(d, "dds.rda"))
+save(res, file=file.path(d, "res.rda"))
+@
+
+<<RiboTagDiffRiboTag{{type}}{{n}}countsHits,resize.width="0.6\\textwidth",fig.show='hold',fig.width=7*4,fig.height=7*4,dev='png'>>=
+col=rep("#00000022", nrow(res))
+col[which(res$padj <= 0.1 & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[2]
+col[which(res$padj <= 0.1 & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[3]
+col[which(res$padj <= 0.01 & res$log2FoldChange > 0)] = brewer.pal(4,"RdBu")[1]
+col[which(res$padj <= 0.01 & res$log2FoldChange < 0)] = brewer.pal(4,"RdBu")[4]
+
+I = order(factor(col, levels=c("#00000022",brewer.pal(4,"RdBu")[c(2,3,1,4)])))
+lim = range(as.vector(C))
+pairs(C[I,],pch=20,cex=0.5,xlim=lim, ylim=lim,col=col[I])
+@
+
+<<RiboTagDiffRiboTag{{type}}{{n}}GSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+fgup = row.names(res)[which(res$significant != "" & res$log2FoldChange > 0)]
+fgdown = row.names(res)[which(res$significant != "" & res$log2FoldChange < 0)]
+bg = row.names(res)[which(!is.na(res$padj))]
+GSEAup = doGSEA(fgup,bg,ENSG2category, k=3)
+GSEAdown = doGSEA(fgdown,bg,ENSG2category, k=3)
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagDiffRiboTag{{type}}{{n}}GSEAreport, echo=FALSE, results='hide'>>=
+hwriteGSEAreport(GSEAup, d = file.path(d, "GSEAup"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, %s up-regulated genes)",n,type),
+                 prefix = "rnaUp-")
+
+hwriteGSEAreport(GSEAdown, d = file.path(d, "GSEAdown"),
+                 ENSGannotation=ENSGannotation, 
+                 title = sprintf("Gene set enrichment analysis (%s, %s down-regulated)",n,type),
+                 prefix = "rnaDown-")
+@
+
+<<RiboTagDiffRiboTag{{type}}{{n}}table>>=
+write.table(res, file=file.path(d, "resulttable.txt"), sep="\t", quote=FALSE)
+page = openPage(file.path(d,"resulttable.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Differential ribosome signal (%s;%s); result table",type,n), 
+       heading=1, page=page)
+hwrite("** = 1% FDR; * = 10% FDR",page=page,br=TRUE)
+col = rep(NA, nrow(res))
+col[which(res$significant != "" & res$log2FoldChange > 0)] = "#fbb4ae"
+col[which(res$significant != "" & res$log2FoldChange < 0)] = "#b3cde3"
+hwrite(as.data.frame(res), row.bgcolor=col, page=page)
+closePage(page, splash=FALSE)
+@
+
+<<RiboTagDiffRiboTag{{type}}{{n}}webpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+hwrite(sprintf("Differential ribosome signal (%s; %s)",type,n), heading=1, 
+       page=page)
+# hwrite("Filter before differential ribosome signal", page=page, heading=3)
+# hwrite(hmakeTag('pre',outputfilter),page=page,br=TRUE)
+hwrite("Scatter plots of log2 read counts", page=page, heading=3)
+hwriteImage(sprintf("RiboTagDiffRiboTag%s%scounts-1.png",type,n),
+            link=sprintf("RiboTagDiffRiboTag%s%scounts-1.png",type,n),
+            width=100,height=100,page=page,br=TRUE)
+
+# hwrite("PCA plot", page=page, heading=3)
+# hwriteImage(sprintf("RiboTagDiffRiboTag%s%sPCA-1.png",type,n),page=page,br=TRUE)
+
+hwrite("The estimated size factors.", page=page, heading=3)
+hwriteImage(matrix(sprintf("RiboTagDiffRiboTag%s%ssizefactors-1.png",type,n),ncol=1),
+            link=sprintf("RiboTagDiffRiboTag%s%ssizefactors-1.pdf",type,n),
+            page=page,br=TRUE)
+hwrite("MA plots of normalized read counts (log2)", page=page, heading=3)
+hwrite("Red dots in the first plot are significantly different between the samples.", page=page, br=TRUE)
+hwriteImage(matrix(sprintf("RiboTagDiffRiboTag%s%sMAplot-%d.png",type,n,1),ncol=1),
+            link=matrix(sprintf("RiboTagDiffRiboTag%s%sMAplot-%d.pdf",type,n,1),ncol=1),
+            page=page,br=TRUE)
+hwrite(sprintf("There are %d genes significantly up-regulated (10%% FDR).",
+               sum(res$padj <= 0.1 & res$log2FoldChange > 0, na.rm=TRUE)), page=page, br=TRUE)
+hwrite(sprintf("There are %d genes significantly down-regulated (10%% FDR).",
+               sum(res$padj <= 0.1 & res$log2FoldChange < 0, na.rm=TRUE)), page=page, br=TRUE)
+hwrite("Scatter plots of log2 read counts (hits are colored)", page=page, heading=3)
+hwriteImage(sprintf("RiboTagDiffRiboTag%s%scountsHits-1.png",type,n),
+            link=sprintf("RiboTagDiffRiboTag%s%scountsHits-1.png",type,n),
+            width=100,height=100,page=page,br=TRUE)
+hwrite("result table", page=page, heading=3)
+hwrite("result table (html)", link="resulttable.html", page=page, br=TRUE)
+hwrite("result table (txt)", link="resulttable.txt", page=page, br=TRUE)
+hwrite("gene set enrichment analysis", page=page, heading=3)
+hwrite("GSEA up-regulated genes", link=file.path("GSEAup","index.html"), page=page, br=TRUE)
+hwrite("GSEA down-regulated genes", link=file.path("GSEAdown","index.html"), page=page, br=TRUE)
+closePage(page, splash=FALSE)
+@

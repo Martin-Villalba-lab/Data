@@ -1,0 +1,175 @@
+
+\subsection{Compare RNAseq and RiboTag data}
+Create an output directory.
+<<RiboTagCompRNAseqRiboTagDir>>=
+d = file.path("result","CompareRNAseqRiboTag","")
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+mainmenu = file.path("..","..","mainmenu.html")
+
+library(grid)
+source(file.path("R","myballoonplot.R"))
+load(file.path("data","ENSG2category.rda"))
+source(file.path("R","doGSEA.R"))
+@
+
+<<RiboTagCompRNAseqRiboTagFigDir,include=FALSE>>=
+opts_chunk$set(fig.path=file.path(d,""))
+@
+
+<<RiboTagCompRNAseqRiboTag>>=
+RNAseq = RiboTag = list()
+S = names(SamplesRNAseq)
+for (s in S) {
+  load(file.path("result","RNAseq",s,"res.rda"))
+  RNAseq[[s]] = res
+  load(file.path("result","RIBOseq",s,"res.rda"))
+  RiboTag[[s]] = res
+}
+@
+
+<<RiboTagCompRNAseqRiboTagTable,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+DFa = data.frame(ENSG = row.names(RNAseq[[1]]),symbol=RNAseq[[1]][,"symbol"], 
+                 stringsAsFactors = FALSE)
+DF1 = data.frame(RNAseq[[1]][,c("baseMean","log2FoldChange","pvalue","padj","significant")], 
+                 stringsAsFactors = FALSE)
+colnames(DF1) = paste(S[1],colnames(DF1),sep=".")
+DF2 = data.frame(RNAseq[[2]][,c("baseMean","log2FoldChange","pvalue","padj","significant")], 
+                 stringsAsFactors = FALSE)
+colnames(DF2) = paste(S[2],colnames(DF2),sep=".")
+DF3 = data.frame(RNAseq[[3]][,c("baseMean","log2FoldChange","pvalue","padj","significant")], 
+                 stringsAsFactors = FALSE)
+colnames(DF3) = paste(S[3],colnames(DF3),sep=".")
+DF = cbind(DFa,DF1,DF2,DF3)
+DF = DF[order(DF$ENSG),]
+write.table(DF, file = file.path(d, "TableS2-RNAseq.txt"), sep="\t", row.names=FALSE, quote=FALSE)
+
+DFa = data.frame(ENSG = row.names(RiboTag[[1]]),symbol=RiboTag[[1]][,"symbol"], 
+                 stringsAsFactors = FALSE)
+DF1 = data.frame(RiboTag[[1]][,c("baseMean","log2FoldChange","pvalue","padj","significant")], 
+                 stringsAsFactors = FALSE)
+colnames(DF1) = paste(S[1],colnames(DF1),sep=".")
+DF2 = data.frame(RiboTag[[2]][,c("baseMean","log2FoldChange","pvalue","padj","significant")], 
+                 stringsAsFactors = FALSE)
+colnames(DF2) = paste(S[2],colnames(DF2),sep=".")
+DF3 = data.frame(RiboTag[[3]][,c("baseMean","log2FoldChange","pvalue","padj","significant")], 
+                 stringsAsFactors = FALSE)
+colnames(DF3) = paste(S[3],colnames(DF3),sep=".")
+DF = cbind(DFa,DF1,DF2,DF3)
+DF = DF[order(DF$ENSG),]
+write.table(DF, file = file.path(d, "TableS3-RiboTag.txt"), sep="\t", row.names=FALSE, quote=FALSE)
+
+@
+
+<<RiboTagCompRNAseqRiboTagGSEA,resize.width="0.47\\textwidth",fig.show='hold',fig.width=5,fig.height=5>>=
+GSEA = list(up = list(
+    both = list(),
+    RNAspecific = list(),
+    RiboTagSpecific = list()
+))
+GSEA$down = GSEA$up
+Nhits = list()
+for (s in S) {
+    Nhits[[s]] = matrix(NA_integer_, nrow=2, ncol = 3, 
+                        dimnames=list(c("up","down"),
+                                      c("RNAspecific","both","RiboTagSpecific")))
+
+    I = which(log2(RNAseq[[s]]$baseMean) > 2 | log2(RiboTag[[s]]$baseMean) > 2)
+    R = RNAseq[[s]][I,]
+    RT = RiboTag[[s]][I,]
+    bg = row.names(R)
+    
+    J = which(R$padj <= 0.1 & R$log2FoldChange > 0 &
+                    RT$padj <= 0.1 & RT$log2FoldChange > 0)
+    fgUp = bg[J]
+    K = which(R$padj <= 0.1 & R$log2FoldChange < 0 &
+                      RT$padj <= 0.1 & RT$log2FoldChange < 0)
+    fgDown = bg[K]
+    GSEA$up$both[[s]] = doGSEA(fgUp,bg,ENSG2category, k=3)
+    GSEA$down$both[[s]] = doGSEA(fgDown,bg,ENSG2category, k=3)
+    Nhits[[s]]["up","both"] = length(J)
+    Nhits[[s]]["down","both"] = length(K)
+    
+    J2 = which(R$padj <= 0.1 & R$log2FoldChange > 0)
+    J2 = setdiff(J2, J)
+    fgUp = bg[J2]
+    K2 = which(R$padj <= 0.1 & R$log2FoldChange < 0)
+    K2 = setdiff(K2, K)
+    fgDown = bg[K2]
+    GSEA$up$RNAspecific[[s]] = doGSEA(fgUp,bg,ENSG2category, k=3)
+    GSEA$down$RNAspecific[[s]] = doGSEA(fgDown,bg,ENSG2category, k=3)
+    Nhits[[s]]["up","RNAspecific"] = length(J2)
+    Nhits[[s]]["down","RNAspecific"] = length(K2)
+
+    J3 = which(RT$padj <= 0.1 & RT$log2FoldChange > 0)
+    J3 = setdiff(J3, J)
+    fgUp = bg[J3]
+    K3 = which(RT$padj <= 0.1 & RT$log2FoldChange < 0)
+    K3 = setdiff(K3, K)
+    fgDown = bg[K3]
+    GSEA$up$RiboTagSpecific[[s]] = doGSEA(fgUp,bg,ENSG2category, k=3)
+    GSEA$down$RiboTagSpecific[[s]] = doGSEA(fgDown,bg,ENSG2category, k=3)
+    Nhits[[s]]["up","RiboTagSpecific"] = length(J3)
+    Nhits[[s]]["down","RiboTagSpecific"] = length(K3)
+}
+@
+
+%The tables of the GSEA are written.
+
+<<RiboTagCompRNAseqRiboTagGSEAreport, echo=FALSE, results='hide'>>=
+FNGSEA = rep("",18)
+z=0
+MGSEA = matrix("",nrow=18,ncol=3)
+for (updown in c("up","down")) {
+    for (type in c("RNAspecific", "both", "RiboTagSpecific")) {
+        for (s in S) {
+            z=z+1
+            FNGSEA[z] = paste("GSEA",s, type, updown,sep="-")
+            MGSEA[z,1] = s
+            MGSEA[z,2] = type
+            MGSEA[z,3] = updown
+            if (s == "ENB-NSC" & updown == "up") colbar = "#2EAC66"
+            if (s == "ENB-NSC" & updown == "down") colbar = "#F9B233"
+            if (s == "LNB-ENB" & updown == "up") colbar = "#FDF07A"
+            if (s == "LNB-ENB" & updown == "down") colbar = "#2EAC66"
+            if (s == "NEURON-LNB" & updown == "up") colbar = "#F29DC3"
+            if (s == "NEURON-LNB" & updown == "down") colbar = "#FDF07A"
+            hwriteGSEAreport(GSEA[[updown]][[type]][[s]],
+                             d = file.path(d, "GSEA", FNGSEA[z]),
+                             ENSGannotation=ENSGannotation, 
+                             title = sprintf("Gene set enrichment analysis (%s; %s %s)",
+                                             s,type,updown),
+                             prefix = FNGSEA[z], colbar=colbar)
+            # if (s == "ENB-NSC" & updown == "up") sel = c("")
+            # if (s == "ENB-NSC" & updown == "down") sel = c("")
+            # if (s == "LNB-ENB" & updown == "up") sel = c("")
+            # if (s == "LNB-ENB" & updown == "down") sel = c("")
+            # if (s == "NEURON-LNB" & updown == "up") sel = c("")
+            # if (s == "NEURON-LNB" & updown == "down") sel = c("")
+        }
+    }
+}
+@
+
+<<RiboTagCompRNAseqRiboTagWebpage,echo=FALSE,results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          file.path(d, "hwriter.css"))
+page = openPage(file.path(d, "index.html"), link.css="hwriter.css")
+hwriteSidebar(page=page, link=mainmenu)
+
+hwrite("Comparison of RNAseq and RiboTag data", heading=1, 
+       page=page)
+
+hwrite("Number of hits", heading=3,
+       page=page)
+for (s in S) {
+    hwrite(s, page=page,br=TRUE)
+    hwrite(Nhits[[s]], page=page,br=TRUE)
+}
+
+hwrite("Gene set enrichment analysis", heading=3,page=page, br=TRUE)
+hwrite(MGSEA,link=file.path("GSEA",FNGSEA,"index.html"),
+            page=page,br=TRUE)
+
+closePage(page, splash=FALSE)
+@
+
