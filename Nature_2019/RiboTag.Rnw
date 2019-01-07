@@ -1,0 +1,268 @@
+%\VignetteIndexEntry{RiboTagNeuralDev}
+%\VignettePackage{RiboTagNeuralDev}
+%\VignetteEngine{knitr::knitr}
+\documentclass[10pt,a4paper,oneside]{article}
+
+<<Style, eval=TRUE, echo=FALSE, results="asis">>=
+BiocStyle::latex()
+@
+
+\title{\textsf{\textbf{RiboTag Neural Development}}}
+\author{Bernd Fischer\\[1em]
+\texttt{b.fischer@dkfz.de}}
+ %German Cancer Research Center (DKFZ),\\ Heidelberg, Germany\\
+
+<<Opts,include=FALSE>>=
+library(knitr)
+opts_chunk$set(concordance=TRUE, 
+               resize.width="0.7\\textwidth", 
+               fig.align='center',
+               dev=c('pdf','png'),
+               cache=TRUE )
+expandTemplates = TRUE
+evalALL = TRUE
+@
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+Libraries are loaded.
+<<Library,results='hide',message=FALSE>>=
+library(limma)
+library(DESeq2)
+library(hwriter)
+library(RColorBrewer)
+library(genefilter)
+library(grid)
+library(gridSVG)
+source(file.path("R","hwriteSidebar.R"))
+@
+
+The dataset is loaded and genes with a count less than 1 over all samples are removed.
+<<RiboTagLoad,results='hide',message=FALSE>>=
+load(file.path("data","rawCounts.rda"))
+load(file.path("data","expectedCounts.rda"))
+load(file.path("data","Anno.rda"))
+
+# pre-filter low count rows
+Anno <- Anno[ rowSums(rawCounts) > 1, ]
+expectedCounts <- expectedCounts[ rowSums(rawCounts) > 1, ]
+rawCounts <- rawCounts[ rowSums(rawCounts) > 1, ]
+Anno$transript_type[is.na(Anno$transript_type)] = "other"
+@
+
+The samples are annotated.
+<<RiboTagColData,results='hide',message=FALSE>>=
+load("data/SampleList.rda")
+
+SampleList$Population = factor(SampleList$Population,
+                               levels=c("NSC","NSC/ENB","ENB","LNB","LNB/NEURON","NEURON"))
+SampleList$Type = factor(SampleList$Type,
+                         levels=c("RIBOctr","RNAseq","RIBOseq"))
+SampleList$Replicate = factor(SampleList$Replicate,
+                              levels=c("RIBOctr","RNAseq","RIBOseq"))
+
+@
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Total RNA
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Differential gene expression of Total RNA}
+Sample indices for five different pairs of total RNA datasets are extracted.
+<<RiboTagSamplesTotal>>=
+SamplesRNAseq = list(
+  "ENB-NSC" = which(SampleList$Population %in% c("NSC","ENB") &
+                  SampleList$Type == "RNAseq"),
+  "LNB-ENB" = which(SampleList$Population %in% c("ENB","LNB") &
+                  SampleList$Type == "RNAseq"),
+  "NEURON-LNB" = which(SampleList$Population %in% c("LNB","NEURON") &
+                  SampleList$Type == "RNAseq"))
+
+DesignRNAseq = list(
+  "ENB-NSC" = as.formula("~Population"),
+  "LNB-ENB" = as.formula("~Population"),
+  "NEURON-LNB" = as.formula("~Population"))
+
+for (n in names(DesignRNAseq)) {
+  SamplesRNAseq[[n]] = SamplesRNAseq[[n]][
+    order(SampleList[SamplesRNAseq[[n]],as.character(DesignRNAseq[[n]])[2]], 
+          SampleList[SamplesRNAseq[[n]],"Replicate"])]
+}
+@
+
+Differential gene expression analysis is performed for each of these comparisons.
+
+<<RiboTagDiffRNAseqExpand,echo=FALSE,results='hide',cache=TRUE,eval=expandTemplates>>=
+t=c()
+for (n in names(SamplesRNAseq)) {
+  t = c(t,knit_expand(file=file.path("DiffRNAseqTemplate.Rnw"),
+                        n=n, type="RNAseq", filter="none"))
+}
+writeLines(t, "DiffRNAseqExpanded.Rnw")
+@
+
+<<RiboTagDiffRNAseqChild, fig.path="result/TotalRNA/", child='DiffRNAseqExpanded.Rnw', eval=evalALL>>=
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Ribosome tag signal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Differential ribosome signal}
+Sample indices for five different pairs of ribosome tag datasets are extracted.
+<<RiboTagSamplesRIBOseq>>=
+SamplesRIBOseq = list(
+  "ENB-NSC" = which(SampleList$Population %in% c("NSC","ENB") &
+                  SampleList$Type == "RIBOseq"),
+  "LNB-ENB" = which(SampleList$Population %in% c("ENB","LNB") &
+                  SampleList$Type == "RIBOseq"),
+  "NEURON-LNB" = which(SampleList$Population %in% c("LNB","NEURON") &
+                  SampleList$Type == "RIBOseq"))
+
+DesignRIBOseq = list(
+  "ENB-NSC" = as.formula("~Population"),
+  "LNB-ENB" = as.formula("~Population"),
+  "NEURON-LNB" = as.formula("~Population"))
+
+for (n in names(DesignRIBOseq)) {
+  SamplesRIBOseq[[n]] = SamplesRIBOseq[[n]][
+    order(SampleList[SamplesRIBOseq[[n]],as.character(DesignRIBOseq[[n]])[2]], 
+          SampleList[SamplesRIBOseq[[n]],"Replicate"])]
+}
+@
+
+Differential gene expression analysis is performed for each of these comparisons.
+
+<<RiboTagDiffRIBOseqExpand,echo=FALSE,results='hide',cache=TRUE,eval=expandTemplates>>=
+t=c()
+for (n in names(SamplesRIBOseq)) {
+  t = c(t,knit_expand(file=file.path("DiffRIBOseqTemplate.Rnw"),
+                        n=n, type="RIBOseq", filter="none"))
+}
+writeLines(t, "DiffRIBOseqExpanded.Rnw")
+@
+
+<<RiboTagDiffRIBOseqChild, fig.path="result/RiboTag/", child='DiffRIBOseqExpanded.Rnw', eval=evalALL>>=
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Translation efficiency (comparison RiboTag, ctrl, totalRNA)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Translation Efficiency}
+
+<<RiboTagSamplesTranslationEfficiency>>=
+SamplesTranslationEfficiency = list(
+  "NSC" = which(SampleList$Population %in% c("NSC", "NSC/ENB")),
+  "ENB" = which(SampleList$Population %in% c("ENB", "NSC/ENB")),
+  "LNB" = which(SampleList$Population %in% c("LNB","LNB/NEURON")),
+  "NEURON" = which(SampleList$Population %in% c("NEURON","LNB/NEURON")) )
+
+DesignTranslationEfficiency = as.formula("~Type")
+
+for (n in names(SamplesTranslationEfficiency)) {
+  SamplesTranslationEfficiency[[n]] = SamplesTranslationEfficiency[[n]][
+    order(SampleList[SamplesTranslationEfficiency[[n]],"Type"], 
+          SampleList[SamplesTranslationEfficiency[[n]],"Replicate"])]
+}
+@
+
+Translation efficiency is estimated for high abundand genes.
+
+<<RiboTagTranslationEfficiencyExpanded,echo=FALSE,results='hide',cache=TRUE,eval=expandTemplates>>=
+t=c()
+for (n in names(SamplesTranslationEfficiency)) {
+  t = c(t,knit_expand(file=file.path("TranslationEfficiencyTemplate.Rnw"),
+                        n=n))
+}
+writeLines(t, "TranslationEfficiencyExpanded.Rnw")
+@
+
+<<RiboTagTranslationEfficiencyChild, fig.path="result/TranslationEfficiency/", child='TranslationEfficiencyExpanded.Rnw', eval=evalALL>>=
+@
+
+
+<<RiboTagCompareStagesChild, fig.path="result/CompareStages/", child='CompareStages.Rnw', eval=TRUE>>=
+@
+
+<<RiboTagCompareRNAseqRiboTagChild, fig.path="result/CompareStages/", child='CompareRNAseqRiboTag.Rnw', eval=TRUE>>=
+@
+
+<<RiboTagMotifChild, fig.path="result/Motifs/", child='Motifs.Rnw', eval=TRUE>>=
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% webpage
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+<<RiboTagMainwegpage, echo=FALSE, results='hide'>>=
+file.copy(system.file("images","hwriter.css", package="hwriter"),
+          "hwriter.css")
+page = openPage("mainmenu.html",link.css="hwriter.css",
+                css=" body { background-color: #dddddd } ")
+hwrite("<small>",table=FALSE,page=page)
+hwrite("RIBOtag for neural development",heading=2,page=page)
+hwrite("RNAseq",heading=3,page=page)
+for (n in names(SamplesRNAseq)) {
+  hwrite(n,link=file.path("result","RNAseq", n, "index.html"),
+         br=TRUE,page=page,target="_parent")
+}
+hwrite("RIBOseq",heading=3,page=page)
+for (n in names(SamplesRIBOseq)) {
+  hwrite(n,link=file.path("result","RIBOseq", n, "index.html"),
+         br=TRUE,page=page,target="_parent")
+}
+hwrite("translation efficiency",heading=3,page=page)
+for (n in names(SamplesTranslationEfficiency)) {
+  hwrite(n,link=file.path("result","TranslationEfficiency", n, "index.html"),
+         br=TRUE,page=page,target="_parent")
+}
+
+hwrite("Comparisons",heading=3,page=page)
+# hwrite("Normalization",link=file.path("result","clustering", "indexNorm.html"),
+#          br=TRUE,page=page,target="_parent")
+# hwrite("Nr of clusters",link=file.path("result","clustering", "indexCluster.html"),
+#          br=TRUE,page=page,target="_parent")
+hwrite("Comparing RNAseq and RIBOseq",
+       link=file.path("result","CompareRNAseqRiboTag", "index.html"),
+       br=TRUE,page=page,target="_parent")
+hwrite("Comparing stages",link=file.path("result","CompareStages", "index.html"),
+         br=TRUE,page=page,target="_parent")
+hwrite("Motifs",heading=3,page=page)
+hwrite("6-mer overrepresentation",link=file.path("result","Motifs", "index_motifs.html"),
+         br=TRUE,page=page,target="_parent")
+hwrite("TOP-motifs",link=file.path("result","Motifs", "index_TOP.html"),
+         br=TRUE,page=page,target="_parent")
+
+hwrite("R code",heading=3,page=page)
+hwrite("vignette",link="vignette.html",br=TRUE,page=page,target="_parent")
+hwrite("</small>",table=FALSE,page=page)
+closePage(page,splash = FALSE)
+
+page = openPage("vignette.html",link.css="hwriter.css")
+hwriteSidebar(page=page, link="mainmenu.html")
+hwrite("R code vignette",heading=1,page=page)
+hwrite("vignette (pdf)",link="RiboTag.pdf",page=page,br=TRUE)
+hwrite("",page=page,br=TRUE)
+hwrite("source code",heading=3,page=page,br=TRUE)
+
+if (file.exists(file.path("RibotagNeuralDev.zip"))) {
+  file.remove(file.path("RibotagNeuralDev.zip"))
+}
+system("cd ..; zip -r RibotagNeuralDev/RibotagNeuralDev.zip RiboTagNeuralDev/*.Rnw RiboTagNeuralDev/input/* RiboTagNeuralDev/data/* RiboTagNeuralDev/R/*")
+hwrite("source code (Rnw, knitr-Sweave-file) and data", link="RibotagNeuralDev.zip",br=TRUE,page=page)
+closePage(page,splash = FALSE)
+
+page = openPage("index.html",link.css="hwriter.css")
+hwriteSidebar(page=page, link="mainmenu.html")
+hwrite("<br><br><br><br><br><br>",heading=1,page=page)
+hwrite("<center>RiboTag</center>",heading=1,page=page)
+closePage(page,splash = FALSE)
+
+@
+
+\end{document}
