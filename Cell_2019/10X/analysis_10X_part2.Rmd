@@ -1,0 +1,1655 @@
+---
+title: "Analysis of Neural Stem Cells from the subventricular zone sequenced by 10X Genomics 3' Chromium protocol (part 2)"
+output: 
+  html_notebook: 
+    smart: no
+    toc: yes
+    toc_float: yes
+    df_print: paged
+---
+
+# Preparations
+
+## Loading the neccessary packages
+
+```{r}
+library("tidyverse")
+library("Seurat")
+library("Matrix")
+
+library("DESeq2")
+library("BiocParallel")
+register(MulticoreParam(4))
+
+library("knitr")
+library("viridis")
+library("gridExtra")
+```
+
+```{r}
+save_csv <- FALSE
+```
+
+## Loading the data
+
+```{r}
+seurat_10X2 <- readRDS(file = "seurat_10X2_clustered_min_1500_nGene.RDS")
+
+TSNEPlot(seurat_10X2 , do.label = TRUE)
+```
+
+## Set the identity to celltype and age combination
+
+```{r}
+seurat_10X2@meta.data[,"celltype_age"] <- paste( seurat_10X2@meta.data$celltype , seurat_10X2@meta.data$age , sep = "_" )
+```
+
+# Differentially expressed genes between cells from old and young mice
+
+## DESeq2
+
+### Differential Expression between NSCs from old vs young animals with DESeq2
+
+```{r}
+seurat_10X2 <- SetAllIdent(object = seurat_10X2 , id = "celltype_age")
+
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c("qNSC1_old","qNSC2_old","aNSC0_old","aNSC1_old","aNSC2_old") ) , ident.use = "NSC_old"  )
+
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c("qNSC1_young","qNSC2_young","aNSC0_young","aNSC1_young","aNSC2_young" ) ) , ident.use = "NSC_young"  )
+
+TSNEPlot(object = seurat_10X2 , do.label = TRUE )
+
+# Run DESeq2
+DE_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "NSC_old" , ident.2 = "NSC_young" , test.use = "DESeq2" , parallel = TRUE , min.pct = 0 , logfc.threshold = 0 )
+
+DE_old_vs_young_DESeq2 <- DE_old_vs_young_DESeq2 %>% tibble::rownames_to_column("gene_symbol") %>% mutate( avg_logFC = avg_logFC/log(2) ) %>% dplyr::rename( avg_log2FC = avg_logFC )
+
+if(save_csv){
+
+  write.csv( x = DE_old_vs_young_DESeq2 , file = paste0("results/DE_DESeq2_old_vs_young/DE_genes_NSC_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat.csv" ) )
+
+}
+```
+
+### Differential Expression between qNSCs for old vs young animals and aNSC for old vs young animals with DESeq2
+
+```{r}
+ seurat_10X2 <- SetAllIdent(object = seurat_10X2 , id = "celltype_age")
+
+ seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c("qNSC1_old","qNSC2_old") ) , ident.use = "qNSC_old"  )
+
+ seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c("aNSC0_old","aNSC1_old","aNSC2_old") ) , ident.use = "aNSC_old"  )
+
+ seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c("qNSC1_young","qNSC2_young") ) , ident.use = "qNSC_young"  )
+
+ seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c("aNSC0_young","aNSC1_young","aNSC2_young") ) , ident.use = "aNSC_young"  )
+
+ TSNEPlot(object = seurat_10X2 , do.label = TRUE )
+
+# Run DESeq2
+
+DE_qNSC_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "qNSC_old" , ident.2 = "qNSC_young" , test.use = "DESeq2" , parallel = TRUE , min.pct = 0 , logfc.threshold = 0)
+
+DE_qNSC_old_vs_young_DESeq2 <- DE_qNSC_old_vs_young_DESeq2 %>% tibble::rownames_to_column("gene_symbol") %>% mutate( avg_logFC = avg_logFC/log(2) ) %>% dplyr::rename( avg_log2FC = avg_logFC )
+
+
+DE_aNSC_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "aNSC_old" , ident.2 = "aNSC_young" , test.use = "DESeq2" , parallel = TRUE , min.pct = 0 , logfc.threshold = 0)
+
+DE_aNSC_old_vs_young_DESeq2 <- DE_aNSC_old_vs_young_DESeq2 %>% tibble::rownames_to_column("gene_symbol") %>% mutate( avg_logFC = avg_logFC/log(2) ) %>% dplyr::rename( avg_log2FC = avg_logFC )
+
+if(save_csv){
+  write.csv( x = DE_aNSC_old_vs_young_DESeq2 , file = "results/DE_DESeq2_old_vs_young/DE_genes_aNSC_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat.csv" ) 
+  write.csv( x = DE_qNSC_old_vs_young_DESeq2 , file = "results/DE_DESeq2_old_vs_young/DE_genes_qNSC_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat.csv" ) 
+}
+
+```
+
+### Differential Expression between young and old for all celltypes individually
+
+```{r}
+seurat_10X2 <- SetAllIdent( object = seurat_10X2 , id = "celltype_age" )
+
+TSNEPlot(object = seurat_10X2 , do.label = TRUE )
+```
+
+Differential expression results are always compared old over young meaning that if in the results there is a log2FC of 1, the gene is log2(1) fold higher in the old than in the young
+
+Use DESeq2 for Differential Expression testing of the individual subpopulations
+
+```{r message=FALSE, warning=FALSE}
+## quiescent neuronal stem cells
+ markers_qNSC1_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "qNSC1_old" , ident.2 = "qNSC1_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE  , min.pct = 0 , logfc.threshold = 0)
+## quiescent neuronal stem cells (primed)
+ markers_qNSC2_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "qNSC2_old" , ident.2 = "qNSC2_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+## active neuronal stem cells
+ markers_aNSC0_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "aNSC0_old" , ident.2 = "aNSC0_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+ markers_aNSC1_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "aNSC1_old" , ident.2 = "aNSC1_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+ markers_aNSC2_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "aNSC2_old" , ident.2 = "aNSC2_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+## TAPs and NB
+markers_TAP_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "TAP_old" , ident.2 = "TAP_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+ markers_NB_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "NB_old" , ident.2 = "NB_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+
+# OD and OPC
+markers_OPC_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "OPC_old" , ident.2 = "OPC_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+markers_OD_old_vs_young_DESeq2 <- FindMarkers(object = seurat_10X2 , ident.1 = "OD_old" , ident.2 = "OD_young" , test.use = "DESeq2" , parallel = TRUE , print.bar = FALSE , min.pct = 0 , logfc.threshold = 0)
+
+if(save_csv){
+  
+ DE_data_list <- list( "genes_qNSC1_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_qNSC1_old_vs_young_DESeq2 , "genes_qNSC2_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_qNSC2_old_vs_young_DESeq2 , "genes_aNSC0_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_aNSC0_old_vs_young_DESeq2 , "genes_aNSC1_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_aNSC1_old_vs_young_DESeq2 , "genes_aNSC2_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_aNSC2_old_vs_young_DESeq2, "genes_TAP_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_TAP_old_vs_young_DESeq2 , "genes_NB_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_NB_old_vs_young_DESeq2 , "genes_OPC_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_OPC_old_vs_young_DESeq2 , "genes_OD_log2FC_old_vs_young_10X_2_DESeq2_from_Seurat" = markers_OD_old_vs_young_DESeq2 )
+  
+ DE_data_list <- lapply( DE_data_list, FUN = function(x){
+   x %>% tibble::rownames_to_column("gene_symbol") %>% mutate( avg_logFC = avg_logFC/log(2) ) %>% dplyr::rename( avg_log2FC = avg_logFC )
+ })
+ 
+ if(save_csv){
+   for( ct in seq(1,length(DE_data_list)) ){
+      write.csv(x = DE_data_list[[ct]] , file = paste0( "results/DE_DESeq2_old_vs_young/celltypes_individual_old_vs_young/DE_" , names(DE_data_list[ct]) , ".csv" ) )  
+   }
+ }
+}
+```
+
+
+## t-test
+
+```{r}
+library(genefilter)
+
+tenx_data <- seurat_10X2@data
+TPM_NSC <- as.matrix(tenx_data)
+
+# Load the cell annotation
+tenx_annotation <- FetchData(object = seurat_10X2 , vars.all = c("celltype","age") ) %>% rownames_to_column("cell") %>% dplyr::rename(type = celltype)
+tenx_annotation$type <- factor(x = tenx_annotation$type , levels = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD"))
+tenx_annotation$age <- factor(x = tenx_annotation$age , levels = c("young","old"))
+NSC_anno <- tenx_annotation
+
+# Subset the expression matrix for young and old into different matrices
+TPM_old <- TPM_NSC[,as.character(NSC_anno[NSC_anno$age == "old",]$cell)]
+TPM_young <- TPM_NSC[,as.character(NSC_anno[NSC_anno$age == "young",]$cell)]
+
+NSC_anno_young <- NSC_anno[NSC_anno$age == "young",]
+NSC_anno_old <- NSC_anno[NSC_anno$age == "old",]
+
+# Expression values are already log transformed
+```
+
+Define function to run t-test
+
+```{r}
+run_ttest_and_calculate_Cohens_d <- function(subpop){
+  
+    ## Subset cells for individual subpopulations
+    TPM_young_subpop <- TPM_young[,as.character(NSC_anno_young[NSC_anno_young$type == subpop,]$cell)]
+    TPM_old_subpop <- TPM_old[,as.character(NSC_anno_old[NSC_anno_old$type == subpop,]$cell)]
+    TPM_NSC_subpop <- TPM_NSC[,as.character(NSC_anno[NSC_anno$type == subpop,]$cell)]
+  
+    # Calculate the mean expression, standard deviation and number of cells with 0 counts for each row (gene) for young and old cells separately
+    table_10X <- data.frame( 
+      gene_id = rownames(TPM_young_subpop),
+      avg_logTPM_young = apply(TPM_young_subpop , MARGIN = 1 , FUN = mean)  , 
+      avg_logTPM_old = apply(TPM_old_subpop , MARGIN = 1 , FUN = mean)  ,
+      sd_logTPM_young = apply(TPM_young_subpop , MARGIN = 1 , FUN = sd)  ,
+      sd_logTPM_old = apply(TPM_old_subpop , MARGIN = 1 , FUN = sd),
+      percent_cells_zero_young = apply(TPM_young_subpop == 0 , MARGIN = 1 , FUN = sum)/ncol(TPM_young_subpop),
+      percent_cells_zero_old = apply(TPM_old_subpop == 0 , MARGIN = 1 , FUN = sum)/ncol(TPM_old_subpop)
+    )
+    
+    # Calculate the difference between the mean from old and young (old - young)
+    table_10X$difference_of_avg <- (table_10X$avg_logTPM_old - table_10X$avg_logTPM_young )
+    
+    # Calculate the mean Standard Deviation between young and old
+    table_10X$mean_sd <- apply( X =  table_10X[,c("sd_logTPM_young","sd_logTPM_old")] , MARGIN = 1 , FUN = mean)
+    
+    # Finally calculate Cohens D, by deviding the difference of the mean values by the mean standard deviation 
+    table_10X$'difference_of_avg/mean_sd' <- table_10X$difference_of_avg/table_10X$mean_sd
+
+    # Add p-values from t-test
+    
+    # Run t-test on 10X NSC data old and young
+    
+    # Prepare factor with young and old in order of the column names
+    fact <- as.character( colnames(TPM_NSC_subpop) )
+    fact[ grepl(x = fact , pattern = "-1") ] <- "old"
+    fact[ grepl(x = fact , pattern = "-2" ) ] <- "young"
+    fact <- factor( fact )
+    
+    # Prepare matrix for t-test input
+    TPM_NSC_mat <- TPM_NSC_subpop
+    TPM_NSC_mat <- as.matrix( TPM_NSC_mat ) 
+    
+    # Run t-test with rowttests function from genefilter packages
+    t_test_NSCs_10X <- rowttests(x = TPM_NSC_mat , fac = fact )
+    
+    # Add ensembl_gene_id as column from the rownames
+    t_test_NSCs_10X$gene_id <- rownames(t_test_NSCs_10X) 
+    
+    # Join the tables
+    table_10X_merged_with_ttest <- full_join(x = table_10X , y = t_test_NSCs_10X , by = "gene_id" )
+
+    table_10X_merged_with_ttest
+}
+```
+
+Run the t-test for all subpopulations individually
+
+```{r}
+subpopulations <- list(c(qNSC1 = "qNSC1",qNSC2 = "qNSC2",aNSC0 = "aNSC0",aNSC1 = "aNSC1",aNSC2 = "aNSC2",TAP = "TAP",NB = "NB",OPC = "OPC",OD = "OD"))
+
+ttest_results_cohensd <- list(
+  qNSC1 = run_ttest_and_calculate_Cohens_d("qNSC1") ,
+  qNSC2 = run_ttest_and_calculate_Cohens_d("qNSC2") ,
+  aNSC0 = run_ttest_and_calculate_Cohens_d("aNSC0") ,
+  aNSC1 = run_ttest_and_calculate_Cohens_d("aNSC1") ,
+  aNSC2 = run_ttest_and_calculate_Cohens_d("aNSC2") ,
+  TAP = run_ttest_and_calculate_Cohens_d("TAP") ,
+  NB = run_ttest_and_calculate_Cohens_d("NB") ,
+  OPC = run_ttest_and_calculate_Cohens_d("OPC") ,
+  OD = run_ttest_and_calculate_Cohens_d("OD")
+)
+  
+# Order the table by cohens d
+ttest_results_cohensd <- lapply(ttest_results_cohensd, FUN = function(x){arrange(x, desc(difference_of_avg/mean_sd))} )
+
+if(save_csv){
+## Save the results as a csv file
+   write.csv(x = ttest_results_cohensd[[1]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[1]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[2]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[2]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[3]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[3]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[4]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[4]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[5]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[5]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[6]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[6]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[7]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[7]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[8]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[8]],".csv") )
+  # 
+   write.csv(x = ttest_results_cohensd[[9]] , file = paste0("results/DE_t-test_old_vs_young/subpopulations/DE_old_vs_young_10X_t-test_CohensD_",names(ttest_results_cohensd)[[9]],".csv") )
+}
+```
+
+
+# Compare pseudotime to Seurat analysis
+
+```{r}
+pseudotime_ordering <- read.csv("Monocle/Monocle_pseudotime_assigment.csv" , row.names = 1)
+```
+
+```{r}
+seurat_10X2 <- AddMetaData(object = seurat_10X2 , metadata = pseudotime_ordering["Pseudotime"] )
+```
+
+## t-SNE plots with pseudotime
+
+```{r}
+seurat_10X2 <- SetAllIdent( object = seurat_10X2 , id = "celltype" )
+
+TSNEPlot(seurat_10X2)
+```
+
+## Overlay pseudotime as color onto the t-SNE plot
+
+We fetch the t-SNE coordinates and the Pseudotime assignment values and plot the t-SNE plot with pseudotime overlayed.
+
+```{r}
+df_plot <- FetchData(object = seurat_10X2, vars.all = c("tSNE_1","tSNE_2","age","Pseudotime","celltype") ) %>% 
+            rownames_to_column("cellbarcode") %>%
+            filter(! is.na(Pseudotime))
+
+g.eq <- ggplot(
+      data = df_plot,
+      mapping = aes(
+        x = tSNE_1,
+        y = tSNE_2,
+        color = Pseudotime
+        )
+     ) +
+  geom_point() +
+  scale_color_viridis(option = "D") +
+  coord_equal()
+
+g.eq
+```
+
+
+
+# Monocle trajectory plot with colored cell identities
+
+```{r fig.height=10, fig.width=13}
+pseudotime_ordering_ident <- data.frame( Cell_Type_Seurat = seurat_10X2@ident) %>% 
+                  rownames_to_column(var = "cellbarcode") %>% 
+                  full_join( pseudotime_ordering %>% 
+                              rownames_to_column(var = "cellbarcode") 
+                    , by = "cellbarcode" ) %>% 
+                  filter(! Cell_Type_Seurat %in% c("OPC","OD",NA) ) %>% 
+                  filter(! is.na(Pseudotime))
+```
+
+```{r , fig.width=15}
+p2_ident.split.h_pch21 <- ggplot(pseudotime_ordering_ident, aes(x = Dim1, y = Dim2, fill = factor( Cell_Type_Seurat , levels = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB")) ), alpha = 1) + 
+  geom_point(size = 3 , alpha = 1 , color = "black" , pch = 21 ) +
+  # theme(text = element_text(size = 16)) + 
+  ggtitle('Trajectory of NSC Lineage as arranged by Monocle') + 
+  scale_fill_manual(values = c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow" ) , name = "Activation state") +
+  # theme(panel.background = element_blank() ) +
+  # theme_classic() +
+  coord_equal() +
+  facet_grid(.~Age) 
+
+p2_ident.split.h_pch21
+```
+
+Plot density along pseudotime for old and young
+
+```{r}
+g <- ggplot(data = pseudotime_ordering_ident , aes(x = Pseudotime , color = Cell_Type_Seurat , fill = Cell_Type_Seurat )) + geom_density(bw=2, alpha = 0.7) + scale_fill_manual(values =   c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow") ) + scale_color_manual(values =   c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow") ) 
+
+g
+```
+
+```{r}
+g <- ggplot(data = pseudotime_ordering_ident , aes(x = Pseudotime , color = Age , fill = Age) ) + geom_density(bw=2, alpha = 0.1)
+
+g
+```
+
+GO Analysis of differentially expressed genes in celltypes
+
+Define function to run GO and GSEA analysis and make a dotplot from the results
+
+GO term analysis
+
+```{r fig.height=10, fig.width=20}
+GO_analysis <- function(DE_results_Seurat_list , p_adj_cutoff = 0.05 , avg_logFC_cutoff = 0.3 ){  # log10(2) = 0.3
+  require("clusterProfiler")
+  
+  if( length(DE_results_Seurat_list) < 1){
+    warning("No entries in DE_results_Seurat_list")
+    invisible(DE_results_Seurat_list)
+  }
+  
+  de_genes_list <-list(NULL)
+  for(i in seq_len(length(DE_results_Seurat_list)) ){
+    de_genes <- DE_results_Seurat_list[[i]] %>% tibble::rownames_to_column("gene") %>% dplyr::filter( p_val_adj < p_adj_cutoff & abs(avg_logFC) > avg_logFC_cutoff ) %>% dplyr::pull(gene)
+    
+    de_genes_list[[ names(DE_results_Seurat_list[i]) ]] <- bitr(geneID = de_genes , fromType = "SYMBOL" , toType = "ENTREZID" , OrgDb = "org.Mm.eg.db" )[,"ENTREZID"]
+  }
+
+    # available ontologies are:
+    # BP - biological_process
+    # CC - cellular_component
+    # MF - molecular_function
+    go_results <- compareCluster(geneClusters = de_genes_list , fun = "enrichGO" , OrgDb = "org.Mm.eg.db" , ont = "BP", pvalueCutoff = 0.05  )
+  
+    clusterProfiler::plot(go_results )
+      
+  return(go_results)
+}
+```
+
+Load the results of the differential expression tests and check the associated GO terms by enrichment analysis
+
+## Go Term analysis for Differentially expressed genes between the individual celltypes (finding marker genes for the celltypes)
+
+```{r}
+
+DE_celltype_genes_qNSC1 <- read.csv(file = "celltype_markers/celltype_qNSC1_upregulated_markers_10X2_young_old.csv"  , header = TRUE , row.names = 1 )
+DE_celltype_genes_qNSC2 <- read.csv(file = "celltype_markers/celltype_qNSC2_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_aNSC0 <- read.csv(file = "celltype_markers/celltype_aNSC0_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_aNSC1 <- read.csv(file = "celltype_markers/celltype_aNSC1_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_aNSC2 <- read.csv(file = "celltype_markers/celltype_aNSC2_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_TAP <- read.csv(file = "celltype_markers/celltype_TAP_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_NB <- read.csv(file = "celltype_markers/celltype_NB_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_OPC <- read.csv(file = "celltype_markers/celltype_OPC_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+DE_celltype_genes_OD <- read.csv(file = "celltype_markers/celltype_OD_upregulated_markers_10X2_young_old.csv" , header = TRUE , row.names = 1 )
+```
+
+```{r}
+celltype_order <- c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD")
+```
+
+
+First we load all objects starting with DE_genes into one list with the object names becoming the list name identifiers and we filter the contained data frames for a value 0 or bigger in the avg_logFC column
+
+```{r}
+df_list_DE_genes_celltypes <- mget( paste( "DE_celltype_genes" , celltype_order , sep = "_") )
+df_list_DE_genes_celltypes <- lapply(df_list_DE_genes_celltypes, FUN = function(x) filter(x,avg_logFC>=0) ) 
+```
+
+Now we can change the name of the list fields to just the celltypes ... 
+
+```{r}
+names(df_list_DE_genes_celltypes) <- str_replace(string = names(df_list_DE_genes_celltypes) , pattern = "^DE_genes_" ,replacement = "" )
+
+df_list_DE_genes_celltypes <- lapply(df_list_DE_genes_celltypes , FUN = function(x){
+                                                                          rownames(x) <- NULL
+                                                                          column_to_rownames(df = x, var = "gene")
+                                                                        })
+```
+
+and run GO_analysis function on it
+
+```{r}
+go_celltypes <- GO_analysis(DE_results_Seurat_list = df_list_DE_genes_celltypes )
+```
+
+```{r}
+go_res <- go_celltypes@compareClusterResult
+
+# Cut names in column Cluster to just the activation state: e.g. "DE_celltype_genes_qNSC1" to "qNSC1"
+go_res$Cluster <- sub( go_res$Cluster , pattern = ".+_" , replacement = "" )
+
+# write.csv(x = go_res , file = "GO_results_compare_celltypes_10X.csv")
+```
+
+and after simplifying the GO terms enriched in the genes
+
+```{r}
+go_celltypes.sim <- simplify(go_celltypes)
+```
+
+Custom plot of GO categories for activation states along lineage
+
+```{r fig.width=13 , fig.height=9}
+gg2 <- clusterProfiler::plot(go_celltypes.sim)
+
+plotdata <- gg2$data %>% filter( p.adjust < 0.05)
+
+levels(plotdata$Cluster) <- sub( x = levels(plotdata$Cluster) , pattern = "DE_celltype_genes_", replacement = "")
+
+gg_clusterCompare <- ggplot(
+                      data = plotdata , 
+                      mapping = aes( 
+                        x = Cluster , 
+                        y = Description , 
+                        size = GeneRatio , 
+                        color = -log10(p.adjust) 
+                        ) 
+                      ) + 
+                     geom_point() + 
+                     scale_color_gradient(low = "blue" , high = "red"  , breaks = c(1,10,20,30,40) , limits = c(1,50) ) + 
+                     theme_bw() + 
+                     theme( 
+                       axis.text.x = element_text(colour="black",size=11), 
+                       axis.text.y = element_text(colour="black",size=11) 
+                     )
+
+gg_clusterCompare
+```
+
+# Heatmaps
+
+```{r}
+neuronal_lineage <- WhichCells(object = seurat_10X2 , ident.remove = c("OD","OPC"))
+```
+
+
+## Heatmap with genes from Basak et al. , but ordered according to center of mass along pseudotime
+
+```{r}
+markers <- c("Agt", "Slc6a9", "Etnppl", "Slc6a1", "Sparc", "Slc1a3", "Bcan", 
+"Tspan7", "Htra1", "Cldn10", "Ptn", "Acsl6", "Fgfr3", "Sparcl1", 
+"Atp1a2", "Gpr37l1", "Gja1", "Prnp", "Acsl3", "Aqp4", "Apoe", 
+"Gm26917", "Cst3", "Clu", "Slc1a2", "Prdx6", "Mt1", "Aldoc", 
+"Thbs4", "Ntrk2", "Fxyd1", "Gstm1", "Igfbp5", "S100a6", "Itm2b", 
+"Sfrp1", "Dkk3", "C4b", "Acot1", "Luc7l3", "Ckb", "Cpe", "Dbi", 
+"Miat", "Lima1", "Pabpc1", "Ascl1", "Rpl12", "Mycn", "Olig2", 
+"Pcna", "Hsp90aa1", "Hnrnpab", "Ran", "Ppia", "Eef1a1", "Ptma", 
+"Rpl41", "Npm1", "Rpsa", "Fabp7", "Egfr", "Mki67", "Dlx2", "Dlx1", 
+"Cdca3", "Dlx1as", "Nrep", "Tubb2b", "Dcx", "Btg1", "Nfib", "Gad1", 
+"Ndrg4", "Snap25", "Syt1", "Rbfox3", "Tmsb10", "Stmn2", "Cd24a", 
+"Dlx6os1", "Tubb5", "Tubb3", "Ccnd2", "Hmgn2", "H2afz", "Sox11", 
+"Tuba1b", "Tmsb4x", "Stmn1", "Tpt1", "Rpl18a")
+```
+
+Fetch the data
+
+```{r}
+expr <- FetchData(object = seurat_10X2 , vars.all = markers , cells.use = neuronal_lineage )
+
+plotDf_expr <-  FetchData(object = seurat_10X2 , vars.all = c("Pseudotime") , cells.use = neuronal_lineage ) %>%
+                rownames_to_column(var = "cellbarcode") %>% 
+                full_join( as.data.frame(expr) %>% 
+                  rownames_to_column(var = "cellbarcode") 
+                , by = "cellbarcode" ) %>% 
+                filter(! is.na(Pseudotime)) %>%
+                arrange(Pseudotime)
+```
+
+```{r}
+plotDf_expr 
+```
+
+```{r}
+expr_mat <- plotDf_expr %>% dplyr::select(-cellbarcode,-Pseudotime) %>% as.matrix()
+```
+
+
+```{r}
+center_of_mass <- apply(X = expr_mat ,MARGIN = 2 , FUN = function(x){ min(which(sum(x)/2 <= cumsum(x))) } )
+```
+
+```{r}
+markers_center_of_mass <- names(sort(center_of_mass))
+```
+
+```{r fig.width=10}
+DoHeatmap(object = seurat_10X2 , genes.use = markers_center_of_mass , slim.col.label = TRUE , col.low = "blue" , col.mid = "white" , col.high = "red" , group.label.rot = TRUE, group.order = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD") , use.scaled = TRUE , cex.row = 3 , group.cex = 10 ) 
+```
+
+## Heatmap with marker genes differentially expressed in the celltypes
+
+Rename the objects and convert column gene to rownames in every data.frame in the list
+
+```{r}
+df_list_DE_genes_celltypes <- mget( paste( "DE_celltype_genes" , c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB") , sep = "_") )
+df_list_DE_genes_celltypes <- lapply(df_list_DE_genes_celltypes, FUN = function(x) filter(x,avg_logFC>=0) ) 
+
+names(df_list_DE_genes_celltypes) <- str_replace(string = names(df_list_DE_genes_celltypes) , pattern = "^DE_genes_" ,replacement = "" )
+```
+
+```{r}
+# Get all names from the sig. differentially expressed celltype markers genes
+markers_center_of_mass_de <- lapply(df_list_DE_genes_celltypes , FUN = function(x){ 
+                                                                          dplyr::filter(x,  p_val_adj < 0.05 ) %>% 
+                                                                          pull(gene) } )
+```
+
+```{r}
+markers_center_of_mass_de <- unique(unlist(markers_center_of_mass_de))
+```
+
+```{r}
+expr_de <- FetchData(object = seurat_10X2 , vars.all = markers_center_of_mass_de , cells.use = neuronal_lineage )
+
+plotDf_expr_de <-  FetchData(object = seurat_10X2 , vars.all = c("Pseudotime") , cells.use = neuronal_lineage ) %>%
+                rownames_to_column(var = "cellbarcode") %>% 
+                full_join( as.data.frame(expr_de) %>% 
+                  rownames_to_column(var = "cellbarcode") 
+                , by = "cellbarcode" ) %>% 
+                filter(! is.na(Pseudotime)) %>%
+                arrange(Pseudotime)
+```
+
+Convert to matrix
+
+```{r}
+expr_mat_de <- plotDf_expr_de %>% dplyr::select(-cellbarcode,-Pseudotime) %>% as.matrix()
+```
+
+Calculate the center of mass for every gene
+
+```{r}
+center_of_mass_de <- apply(X = expr_mat_de ,MARGIN = 2 , FUN = function(x){ min(which(sum(x)/2 <= cumsum(x))) } )
+```
+
+```{r}
+length(center_of_mass_de)
+```
+
+```{r}
+markers_center_of_mass_de <- names(sort(center_of_mass_de))
+
+markers_center_of_mass_de_wts <- sort(center_of_mass_de)
+```
+
+Now we also take the markers for the Oligodendrocytes and their Progenitors and append them
+
+```{r}
+genes_OD <- as.character( DE_celltype_genes_OD %>% dplyr::filter( p_val_adj < 0.05 ) %>% pull(gene) )
+
+genes_OD_wts <- rep(1, length(genes_OD))
+names(genes_OD_wts) <-  genes_OD
+```
+
+```{r}
+genes_OPC <- as.character( DE_celltype_genes_OPC %>% dplyr::filter( p_val_adj < 0.05 ) %>% pull(gene) )
+
+genes_OPC_wts <- rep(0, length(genes_OPC))
+names(genes_OPC_wts) <-  genes_OPC
+```
+
+Append the genes to the list of markers
+
+```{r}
+markers_center_of_mass_de <- c(markers_center_of_mass_de, genes_OPC , genes_OD )
+markers_center_of_mass_de <- unique(markers_center_of_mass_de)
+
+markers_center_of_mass_de_wts <- c(markers_center_of_mass_de_wts , genes_OPC_wts , genes_OD_wts)
+markers_center_of_mass_de_wts <- markers_center_of_mass_de_wts[ unique(names(markers_center_of_mass_de_wts)) ]
+```
+
+Plot Heatmap
+
+```{r fig.width=10}
+DoHeatmap(object = seurat_10X2 , genes.use = markers_center_of_mass_de , slim.col.label = TRUE , group.cex = 10 ,  col.low = "blue" , col.mid = "white" , col.high = "red" , group.label.rot = TRUE, group.order = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD") , use.scaled = TRUE , cex.row = 0 ) 
+```
+
+# Plot average expression per gene young vs old
+
+## Split the 10X data by age
+
+```{r}
+seurat_10X2_young <- SubsetData( object = seurat_10X2 , subset.name = "age_num" ,  accept.low = 1.5 )
+seurat_10X2_old <- SubsetData( object = seurat_10X2 , subset.name = "age_num" ,  accept.high = 1.5 )
+```
+
+## All cells
+
+```{r fig.height=5 , fig.width=5}
+library(ggrepel)
+
+old_avg <- AverageExpression(object = SetIdent( object = seurat_10X2_old ,ident.use = "old" ) ) %>% rownames_to_column("gene")
+young_avg <- AverageExpression(object = SetIdent( object = seurat_10X2_young ,ident.use = "young") )  %>% rownames_to_column("gene")
+
+avg <- full_join(x = old_avg  , y = young_avg  , by = "gene")
+
+avg$old <- avg$old + 1
+avg$young <- avg$young + 1
+
+avg_mut <- mutate(avg , rt=old/young ) %>% filter(rt > 2  | rt < 0.5)
+
+mx <- max(c(avg$old,avg$young))+5
+
+ggplot(data = avg , mapping = aes(x = young , y = old )) + geom_point(color = "grey") + coord_equal() + geom_line(data = data.frame(x = c(1,1000) , y = c(1,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , size= 0.3 ) + geom_line(data = data.frame(x = c(2,1000) , y = c(1,500) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + geom_line(data = data.frame(x = c(1,500) , y = c(2,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + scale_x_log10() + scale_y_log10() + annotation_logticks() + geom_point(data = avg_mut , size = 2  , fill = "black" , pch = 21  ) + ggtitle("Comparison of average gene expression\nbetween young and old")
+
+```
+
+## Only lineage
+
+```{r fig.height=5 , fig.width=5}
+library(ggrepel)
+
+old_avg <- AverageExpression(object = SetIdent( object = SubsetData( seurat_10X2_old , ident.use = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB") )  ,ident.use = "old" ) ) %>% rownames_to_column("gene")
+young_avg <- AverageExpression(object = SetIdent( object = SubsetData(object = seurat_10X2_young , ident.use = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB") ) ,ident.use = "young") )  %>% rownames_to_column("gene")
+
+avg <- full_join(x = old_avg  , y = young_avg  , by = "gene")
+
+avg$old <- avg$old + 1
+avg$young <- avg$young + 1
+
+avg_mut <- mutate(avg , rt=old/young ) %>% filter(rt > 2  | rt < 0.5)
+
+mx <- max(c(avg$old,avg$young))+5
+
+ggplot(data = avg , mapping = aes(x = young , y = old )) + geom_point( color = "grey" ) + coord_equal() + geom_line(data = data.frame(x = c(1,1000) , y = c(1,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , size= 0.3 ) + geom_line(data = data.frame(x = c(2,1000) , y = c(1,500) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + geom_line(data = data.frame(x = c(1,500) , y = c(2,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + scale_x_log10() + scale_y_log10() + annotation_logticks() + geom_point(data = avg_mut , size = 2  , fill = "black" , pch = 21   ) + ggtitle("Comparison of average gene expression\nbetween young and old - qNSC1 to NB")
+
+```
+
+## Only NSCs
+
+```{r fig.height=5 , fig.width=5}
+library(ggrepel)
+
+old_avg <- AverageExpression(object = SetIdent( object = SubsetData( seurat_10X2_old , ident.use = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2") )  ,ident.use = "old" ) ) %>% rownames_to_column("gene")
+young_avg <- AverageExpression(object = SetIdent( object = SubsetData(object = seurat_10X2_young , ident.use = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2") ) ,ident.use = "young") )  %>% rownames_to_column("gene")
+
+avg <- full_join(x = old_avg  , y = young_avg  , by = "gene")
+
+avg$old <- avg$old + 1
+avg$young <- avg$young + 1
+
+avg_mut <- mutate(avg , rt=old/young ) %>% filter(rt > 2  | rt < 0.5)
+
+mx <- max(c(avg$old,avg$young))+5
+
+ggplot(data = avg , mapping = aes(x = young , y = old )) + geom_point( color = "grey") + coord_equal() + geom_line(data = data.frame(x = c(1,1000) , y = c(1,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , size= 0.3 ) + geom_line(data = data.frame(x = c(2,1000) , y = c(1,500) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + geom_line(data = data.frame(x = c(1,500) , y = c(2,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + scale_x_log10() + scale_y_log10() + annotation_logticks() + geom_point(data = avg_mut , size = 2  , fill = "black" , pch = 21   ) + ggtitle("Comparison of average gene expression\nbetween young and old - only neural stem cells")
+
+```
+
+
+## Only Oligodendrocytes and Oligodendrocyte progenitors
+
+```{r fig.height=5 , fig.width=5}
+library(ggrepel)
+
+old_avg <- AverageExpression(object = SetIdent( object = SubsetData( seurat_10X2_old , ident.use = c("OD","OPC") )  ,ident.use = "old" ) ) %>% rownames_to_column("gene")
+young_avg <- AverageExpression(object = SetIdent( object = SubsetData(object = seurat_10X2_young , ident.use = c("OD","OPC") ) ,ident.use = "young") )  %>% rownames_to_column("gene")
+
+avg <- full_join(x = old_avg  , y = young_avg  , by = "gene")
+
+avg$old <- avg$old + 1
+avg$young <- avg$young + 1
+
+avg_mut <- mutate(avg , rt=old/young ) %>% filter(rt > 2  | rt < 0.5)
+
+mx <- max(c(avg$old,avg$young))+5
+
+ggplot(data = avg , mapping = aes(x = young , y = old )) + geom_point(color = "grey") + coord_equal() + geom_line(data = data.frame(x = c(1,1000) , y = c(1,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , size= 0.3 ) + geom_line(data = data.frame(x = c(2,1000) , y = c(1,500) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + geom_line(data = data.frame(x = c(1,500) , y = c(2,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + scale_x_log10() + scale_y_log10() + annotation_logticks() + geom_point(data = avg_mut , size = 1.5  , fill = "black" , pch = 21   ) + ggtitle("Comparison of average gene expression\nbetween young and old - OPC and OD")
+```
+
+## Only Oligodendrocyte progenitors
+
+```{r fig.height=5 , fig.width=5}
+library(ggrepel)
+
+old_avg <- AverageExpression(object = SetIdent( object = SubsetData( seurat_10X2_old , ident.use = c("OPC") )  ,ident.use = "old" ) ) %>% rownames_to_column("gene")
+young_avg <- AverageExpression(object = SetIdent( object = SubsetData(object = seurat_10X2_young , ident.use = c("OPC") ) ,ident.use = "young") )  %>% rownames_to_column("gene")
+
+avg <- full_join(x = old_avg  , y = young_avg  , by = "gene")
+
+avg$old <- avg$old + 1
+avg$young <- avg$young + 1
+
+avg_mut <- mutate(avg , rt=old/young ) %>% filter(rt > 2  | rt < 0.5)
+
+mx <- max(c(avg$old,avg$young))+5
+
+ggplot(data = avg , mapping = aes(x = young , y = old )) + geom_point(color = "grey") + coord_equal() + geom_line(data = data.frame(x = c(1,1000) , y = c(1,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , size= 0.3 ) + geom_line(data = data.frame(x = c(2,1000) , y = c(1,500) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + geom_line(data = data.frame(x = c(1,500) , y = c(2,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + scale_x_log10() + scale_y_log10() + annotation_logticks() + geom_point(data = avg_mut , size = 2 , fill = "black" , pch = 21   ) + ggtitle("Comparison of average gene expression\nbetween young and old - OPC")
+```
+
+## Only Oligodendrocytes
+
+```{r fig.height=5 , fig.width=5}
+library(ggrepel)
+
+old_avg <- AverageExpression(object = SetIdent( object = SubsetData( seurat_10X2_old , ident.use = c("OD") )  ,ident.use = "old" ) ) %>% rownames_to_column("gene")
+young_avg <- AverageExpression(object = SetIdent( object = SubsetData(object = seurat_10X2_young , ident.use = c("OD") ) ,ident.use = "young") )  %>% rownames_to_column("gene")
+
+avg <- full_join(x = old_avg  , y = young_avg  , by = "gene")
+
+avg$old <- avg$old + 1
+avg$young <- avg$young + 1
+
+avg_mut <- mutate(avg , rt=old/young ) %>% filter(rt > 2  | rt < 0.5)
+
+mx <- max(c(avg$old,avg$young))+5
+
+ggplot(data = avg , mapping = aes(x = young , y = old )) + geom_point(color = "grey") + coord_equal() + geom_line(data = data.frame(x = c(1,1000) , y = c(1,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , size= 0.3 ) + geom_line(data = data.frame(x = c(2,1000) , y = c(1,500) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + geom_line(data = data.frame(x = c(1,500) , y = c(2,1000) ) , mapping = aes(x=x,y=y) , alpha = 1 , color = "grey40" , linetype = 2 ) + scale_x_log10() + scale_y_log10() + annotation_logticks() + geom_point(data = avg_mut , size = 2 , fill = "black" , pch = 21   ) + ggtitle("Comparison of average gene expression\nbetween young and old - OD")
+```
+
+# Euclidean distances between clusters q1 and q2, q2 and a0 , a0 and a1 , opc and od
+
+```{r}
+data_selected_celltypes <- FetchData(object = seurat_10X2 , vars.all = c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8") , cells.use = WhichCells(object = seurat_10X2 , ident = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD")))
+```
+
+Calculate euclidean distance
+
+```{r}
+dstmat_selected_celltypes <- as.matrix( dist(data_selected_celltypes) )
+```
+
+View into the distance matrix
+
+```{r}
+head(dstmat_selected_celltypes[1:5,1:5])
+```
+
+Get the names of the cells from the different celltypes
+
+```{r}
+q1 <- WhichCells(object = seurat_10X2 , ident = c("qNSC1"))
+q2 <- WhichCells(object = seurat_10X2 , ident = c("qNSC2"))
+a0 <- WhichCells(object = seurat_10X2 , ident = c("aNSC0"))
+a1 <- WhichCells(object = seurat_10X2 , ident = c("aNSC1"))
+a2 <- WhichCells(object = seurat_10X2 , ident = c("aNSC2"))
+tap <- WhichCells(object = seurat_10X2 , ident = c("TAP"))
+nb  <- WhichCells(object = seurat_10X2 , ident = c("NB"))
+opc <- WhichCells(object = seurat_10X2 , ident = c("OPC"))
+od <- WhichCells(object = seurat_10X2 , ident = c("OD"))
+```
+
+##Select the submatrix which contains the distances between celltypes
+
+### q1 and q2
+
+```{r}
+dstmat_q1q2 <- dstmat_selected_celltypes[q1,q2]
+
+hist(dstmat_q1q2 , xlab = "Euclidean Distance" , main = "Histogram: Euclidean Distances from qNSC1 to qNSC2" )
+abline(v = mean(dstmat_q1q2) , col = "red")
+```
+
+### q2 and a0
+
+```{r}
+dstmat_q2a0 <- dstmat_selected_celltypes[q2,a0]
+
+hist(dstmat_q2a0, xlab = "Euclidean Distance" , main = "Histogram: Euclidean Distances from qNSC2 to aNSC0" )
+abline(v = mean(dstmat_q2a0) , col = "red")
+```
+
+### a0 and a1
+
+```{r}
+dstmat_a0a1 <- dstmat_selected_celltypes[a0,a1]
+
+hist(dstmat_a0a1, xlab = "Euclidean Distance" , main = "Histogram: Euclidean Distances from aNSC0 to aNSC1" )
+abline(v = mean(dstmat_a0a1) , col = "red")
+```
+
+### opc and od
+
+```{r}
+dstmat_opc_od <- dstmat_selected_celltypes[opc,od]
+
+hist(dstmat_opc_od , xlab = "Euclidean Distance" , main = "Histogram: Euclidean Distances from OPC to OD" )
+abline(v = mean(dstmat_opc_od) , col = "red")
+```
+
+### q1 and od
+
+```{r}
+dstmat_q1_od <- dstmat_selected_celltypes[q1,od]
+
+hist(dstmat_q1_od , xlab = "Euclidean Distance" , main = "Histogram: Euclidean Distances from qNSC1 to OD" )
+abline(v = mean(dstmat_q1_od) , col = "red")
+```
+
+### q2 and od
+
+```{r}
+dstmat_q2_od <- dstmat_selected_celltypes[q2,od]
+
+hist(dstmat_q2_od , xlab = "Euclidean Distance" , main = "Histogram: Euclidean Distances from qNSC2 to OD" )
+abline(v = mean(dstmat_q2_od) , col = "red")
+```
+
+## Density plot of euclidean distances
+
+```{r fig.width=6, fig.height=9}
+df_hist<- bind_rows(
+  data.frame( comparison = "qNSC1 vs qNSC2" , count = as.vector(dstmat_q1q2) ) ,
+  data.frame( comparison = "qNSC2 vs aNSC0" , count = as.vector(dstmat_q2a0) ) ,
+  data.frame( comparison = "aNSC0 vs aNSC1" , count = as.vector(dstmat_a0a1) ) ,
+  data.frame( comparison = "OPC vs OD" , count = as.vector(dstmat_opc_od) ) ,
+  data.frame( comparison = "qNSC1 vs OD" , count = as.vector(dstmat_q1_od) ) ,
+  data.frame( comparison = "aNSC1 vs aNSC2" , count = as.vector(dstmat_selected_celltypes[a1,a2]) ),
+  data.frame( comparison = "aNSC2 vs TAP" , count =as.vector(dstmat_selected_celltypes[a2,tap]) ),
+  data.frame( comparison = "TAP vs NB" , count =as.vector(dstmat_selected_celltypes[tap,nb]) )
+) 
+
+df_hist$comparison <- factor(df_hist$comparison , levels = c("OPC vs OD","qNSC1 vs OD","qNSC1 vs qNSC2","qNSC2 vs aNSC0","aNSC0 vs aNSC1","aNSC1 vs aNSC2","aNSC2 vs TAP","TAP vs NB"))
+
+ggplot(data = df_hist ) + geom_density(aes(x=count,color=comparison, fill = comparison) , alpha = 0.25 ) + xlab("euclidean distance")  + facet_wrap(facets = "comparison" , ncol = 1) + geom_vline(xintercept=19.7)
+```
+
+
+# PCA plot of 10X data 
+
+```{r}
+celltype_colors <- c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow" , OPC = "pink" , OD = "violet")
+
+age_colors <- c(young = "yellowgreen" , old = "slateblue")
+```
+
+```{r}
+seurat_10X2_age_ident <- SetAllIdent(object = seurat_10X2 , id = "age")
+```
+
+
+## Colored by celltype
+
+Calculate percentage of variance for all PCs
+```{r}
+sd <- GetDimReduction(object = seurat_10X2 , reduction.type = "pca" , slot = "sdev")
+pov <- round( (sd^2/sum(sd^2))*100 , digits = 1 )
+```
+
+
+```{r fig.width=10, fig.height=7}
+pc_1_2 <- PCAPlot(object = seurat_10X2, 1, 2 , pt.size = 0.5 , do.return = TRUE) + scale_color_manual(values = celltype_colors , breaks = names(celltype_colors) )   + xlab(paste("PC1 (",pov[1],"% )")) + ylab(paste("PC2 (",pov[2], "% )")) + coord_equal()
+
+pc_1_2
+```
+
+```{r fig.width=10, fig.height=7}
+pc_1_3 <- PCAPlot(object = seurat_10X2, 1, 3 , pt.size = 0.5 , do.return = TRUE) + scale_color_manual(values = celltype_colors , breaks = names(celltype_colors) )  + xlab(paste("PC1 (",pov[1],"% )")) + ylab(paste("PC3 (",pov[3], "% )"))  + coord_equal()
+
+pc_1_3
+```
+
+```{r fig.width=10, fig.height=7}
+pc_2_3 <- PCAPlot(object = seurat_10X2, 2,3 , pt.size = 0.5 , do.return = TRUE) + scale_color_manual(values = celltype_colors , breaks = names(celltype_colors) )  + xlab(paste("PC2 (",pov[2],"% )")) + ylab(paste("PC3 (",pov[3], "% )"))  + coord_equal()
+
+pc_2_3
+```
+
+```{r fig.width=10, fig.height=7}
+pc_1_4 <- PCAPlot(object = seurat_10X2, 1,4 , pt.size = 0.5, do.return = TRUE) + scale_color_manual(values = celltype_colors , breaks = names(celltype_colors) )  + xlab(paste("PC1 (",pov[1],"% )")) + ylab(paste("PC4 (",pov[4], "% )"))  + coord_equal()
+
+pc_1_4
+```
+
+## Colored by age
+
+```{r fig.width=10, fig.height=7}
+PCAPlot(object = seurat_10X2_age_ident, 1, 2 , pt.size = 0.5, do.return = TRUE) + scale_color_manual(values = age_colors , breaks = names(age_colors) )   + xlab(paste("PC1 (",pov[1],"% )")) + ylab(paste("PC2 (",pov[2], "% )"))  + coord_equal()
+```
+
+```{r fig.width=10, fig.height=7}
+pc_1_3_age <- PCAPlot(object = seurat_10X2_age_ident, 1, 3 , pt.size = 0.5 , do.return = TRUE) + scale_color_manual(values = age_colors , breaks = names(age_colors) )  + xlab(paste("PC1 (",pov[1],"% )")) + ylab(paste("PC3 (",pov[3], "% )"))  + coord_equal()
+
+pc_1_3_age
+```
+
+```{r fig.width=10, fig.height=7}
+PCAPlot(object = seurat_10X2_age_ident, 2, 3 , pt.size = 0.5 , do.return = TRUE) + scale_color_manual(values = age_colors , breaks = names(age_colors) ) + xlab(paste("PC2 (",pov[2],"% )")) + ylab(paste("PC3 (",pov[3], "% )"))  + coord_equal()
+```
+
+```{r fig.width=10, fig.height=7}
+PCAPlot(object = seurat_10X2_age_ident, 1, 4 , pt.size = 0.5 , do.return = TRUE) + scale_color_manual(values = age_colors , breaks = names(age_colors) )  + xlab(paste("PC1 (",pov[1],"% )")) + ylab(paste("PC4 (",pov[4], "% )"))  + coord_equal()
+```
+## PCA plots grid
+
+```{r fig.width=15, fig.height=15}
+grid.arrange(pc_1_3,pc_1_3_age,pc_1_2,pc_2_3)
+```
+
+# t-SNE plot of all cells
+
+```{r}
+df_plot_tSNE <- FetchData(object = seurat_10X2, vars.all = c("tSNE_1","tSNE_2","age","celltype") ) %>% 
+            rownames_to_column("cellbarcode")
+```
+
+```{r fig.width = 10}
+gg_tsne <- ggplot(
+      data = df_plot_tSNE,
+      mapping = aes(
+        x = tSNE_1,
+        y = tSNE_2,
+        fill = factor( celltype , levels = names(celltype_colors) )
+        )
+     ) +
+  geom_point( pch = 21 , color = "black" , size = 2 ) +
+  scale_fill_manual(values = celltype_colors , name = "Activation state" ) +  
+  guides(color = "none" ) +
+  theme(legend.position="none") + 
+  coord_equal()
+
+gg_tsne
+```
+
+```{r fig.width = 10}
+gg_tsne_age <- ggplot(
+      data = df_plot_tSNE,
+      mapping = aes(
+        x = tSNE_1,
+        y = tSNE_2,
+        fill = factor( age , levels = names(age_colors) )
+        )
+     ) +
+  geom_point( pch = 21 , color = "black" , size = 2 ) +
+  scale_fill_manual(values = age_colors , name = "Age" ) +  
+  guides(color = "none") + 
+  theme(legend.position="none") + 
+  coord_equal()
+
+gg_tsne_age
+```
+
+# Make PCA and tSNE plots for each subpopulation
+
+```{r}
+PCAPlot_seurat <- function(object , dim1 = 1, dim2 = 2 , scale_pcs_by_sd = TRUE ){
+
+  gg_pca <- PCAPlot(object = object , dim.1 = dim1, dim.2 = dim2 , cols.use = celltype_colors , pt.shape = "age", do.return = TRUE )
+  
+  sd <- GetDimReduction(object = object , reduction.type = "pca" , slot = "sdev")
+  pov <- round( (sd^2/sum(sd^2))*100 , digits = 1 )
+  
+  if(scale_pcs_by_sd){
+    gg_pca$data$x <- gg_pca$data$x * sd[[dim1]]
+    gg_pca$data$y <- gg_pca$data$y * sd[[dim2]]
+  }
+  
+  xlimits <- NULL
+  ylimits <- NULL
+    
+  x_range <- range(gg_pca$data$x)
+  x_diff <- x_range[2]-x_range[1] 
+  
+  y_range  <- range(gg_pca$data$y)
+  y_diff <- y_range[2]-y_range[1] 
+
+  if(x_diff > y_diff){
+    
+    offset <- (( x_diff - y_diff ) / 2 )
+    
+    y_range[1] <- y_range[1] - offset
+    y_range[2] <- y_range[2] + offset
+
+    ylimits <- y_range
+        
+  }else if( y_diff > x_diff ){
+    
+    offset <- (( y_diff - x_diff ) / 2 )
+    
+    x_range[1] <- x_range[1] - offset
+    x_range[2] <- x_range[2] + offset
+  
+    xlimits <- x_range
+    
+  }
+    
+    
+  gg <- ggplot(data = gg_pca$data , aes(x = x , y = y , fill = pt.shape  , shape = pt.shape) ) + geom_point(size = 2, colour = "black") + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank() ) + scale_fill_manual(values = age_colors , limits = names(age_colors) ,  name = "Age") + scale_shape_manual(values = c(old = 24 , young = 21) , limits = names(age_colors) , name = "Age") + coord_equal()  + xlab(paste("PC",dim1," (",pov[dim1],"%)")) + ylab(paste("PC",dim2," (",pov[dim2], "%)")) + ggtitle(paste0(unique(gg_pca$data$ident)) ) + guides(color = "none")
+  
+  if(!is.null(xlimits)){gg <- gg + xlim( xlimits )}
+  if(!is.null(ylimits)){gg <- gg + ylim( ylimits )}
+  
+  gg
+}
+```
+
+```{r}
+TSNEPlot_Seurat <- function(x , title = ""){
+
+  xlimits <- NULL
+  ylimits <- NULL
+    
+  x_range <- range(x$tSNE_1)
+  x_diff <- x_range[2]-x_range[1] 
+  
+  y_range  <- range(x$tSNE_2)
+  y_diff <- y_range[2]-y_range[1] 
+
+  if(x_diff > y_diff){
+    
+    offset <- (( x_diff - y_diff ) / 2 )
+    
+    y_range[1] <- y_range[1] - offset
+    y_range[2] <- y_range[2] + offset
+
+    ylimits <- y_range
+        
+  }else if( y_diff > x_diff ){
+    
+    offset <- (( y_diff - x_diff ) / 2 )
+    
+    x_range[1] <- x_range[1] - offset
+    x_range[2] <- x_range[2] + offset
+  
+    xlimits <- x_range
+  }
+    
+  gg <- ggplot(data = x , mapping = aes(x = tSNE_1 , y = tSNE_2 , fill = age  , shape = age)) + geom_point(size = 2, colour = "black") + scale_fill_manual(values = c( "old" =  "slateblue", "young" = "yellowgreen") , labels = c( "old" , "young" ) , name = "Age" ) + labs( x = "tSNE 1" , y = "tSNE 2" ) + coord_equal() + guides(color = "none") + scale_shape_manual(values = c( "old" = 24 , "young" = 21) , labels = c( "old" , "young" ) , name = "Age") + ggtitle( title )
+  
+  if(!is.null(xlimits)){gg <- gg + xlim( xlimits )}
+  if(!is.null(ylimits)){gg <- gg + ylim( ylimits )}
+  
+  gg
+}
+```
+
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_qNSC1 <- SubsetData(object = seurat_10X2 , ident.use = "qNSC1")
+seurat_10X2_qNSC1 <- FindVariableGenes(object = seurat_10X2_qNSC1 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_qNSC1 <- RunPCA(object = seurat_10X2_qNSC1 , do.print = FALSE )
+
+pca_q1 <- PCAPlot_seurat( object = seurat_10X2_qNSC1 , dim1 = 1, dim2 = 2 )
+
+pca_q1
+
+PCAPlot_seurat( object = seurat_10X2_qNSC1 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_qNSC1<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_qNSC1 , pc.use = x , num.genes = 50 )} ) )
+
+seurat_10X2_qNSC1 <- RunTSNE(object = seurat_10X2_qNSC1 , dims.use = 1:3 , seed.use = 1 )
+
+TSNEPlot(object = seurat_10X2_qNSC1 ) 
+
+
+
+x <- FetchData( object =  seurat_10X2_qNSC1 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_qNSC1 <- TSNEPlot_Seurat(x = x , title = "qNSC1") 
+
+gg_tsne_qNSC1
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_qNSC2 <- SubsetData(object = seurat_10X2 , ident.use = "qNSC2")
+seurat_10X2_qNSC2 <- FindVariableGenes(object = seurat_10X2_qNSC2 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_qNSC2 <- RunPCA(object = seurat_10X2_qNSC2 , do.print = FALSE )
+
+pca_q2 <- PCAPlot_seurat( object = seurat_10X2_qNSC2 , dim1 = 1, dim2 = 2 )
+
+pca_q2
+
+PCAPlot_seurat( object = seurat_10X2_qNSC2 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_qNSC2<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_qNSC2 , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_qNSC2 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_qNSC2 <- TSNEPlot_Seurat(x = x , title = "qNSC2") 
+
+gg_tsne_qNSC2
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_aNSC0 <- SubsetData(object = seurat_10X2 , ident.use = "aNSC0")
+seurat_10X2_aNSC0 <- FindVariableGenes(object = seurat_10X2_aNSC0 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_aNSC0 <- RunPCA(object = seurat_10X2_aNSC0 , do.print = FALSE )
+
+pca_a0 <- PCAPlot_seurat( object = seurat_10X2_aNSC0 , dim1 = 1, dim2 = 2 )
+
+pca_a0
+
+PCAPlot_seurat( object = seurat_10X2_aNSC0 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_aNSC0<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_aNSC0 , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_aNSC0 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_aNSC0 <- TSNEPlot_Seurat(x = x , title = "aNSC0") 
+
+gg_tsne_aNSC0
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_aNSC1 <- SubsetData(object = seurat_10X2 , ident.use = "aNSC1")
+seurat_10X2_aNSC1 <- FindVariableGenes(object = seurat_10X2_aNSC1 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_aNSC1 <- RunPCA(object = seurat_10X2_aNSC1 , do.print = FALSE )
+
+pca_a1 <- PCAPlot_seurat( object = seurat_10X2_aNSC1 , dim1 = 1, dim2 = 2 )
+
+pca_a1
+
+PCAPlot_seurat( object = seurat_10X2_aNSC1 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_aNSC1<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_aNSC1 , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_aNSC1 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_aNSC1 <- TSNEPlot_Seurat(x = x , title = "aNSC1") 
+
+gg_tsne_aNSC1
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_aNSC2 <- SubsetData(object = seurat_10X2 , ident.use = "aNSC2")
+seurat_10X2_aNSC2 <- FindVariableGenes(object = seurat_10X2_aNSC2 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_aNSC2 <- RunPCA(object = seurat_10X2_aNSC2 , do.print = FALSE )
+
+pca_a2 <- PCAPlot_seurat( object = seurat_10X2_aNSC2 , dim1 = 1, dim2 = 2 )
+
+pca_a2
+
+PCAPlot_seurat( object = seurat_10X2_aNSC2 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_aNSC2 <- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_aNSC2 , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_aNSC2 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_aNSC2 <- TSNEPlot_Seurat(x = x , title = "aNSC2") 
+
+gg_tsne_aNSC2
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_TAP <- SubsetData(object = seurat_10X2 , ident.use = "TAP")
+seurat_10X2_TAP <- FindVariableGenes(object = seurat_10X2_TAP , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_TAP <- RunPCA(object = seurat_10X2_TAP , do.print = FALSE )
+
+pca_tap <- PCAPlot_seurat( object = seurat_10X2_TAP , dim1 = 1, dim2 = 2 )
+
+pca_tap
+
+PCAPlot_seurat( object = seurat_10X2_TAP , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_TAP <- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_TAP , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_TAP , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_TAP <- TSNEPlot_Seurat(x = x , title = "TAP") 
+
+gg_tsne_TAP
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_NB <- SubsetData(object = seurat_10X2 , ident.use = "NB")
+seurat_10X2_NB <- FindVariableGenes(object = seurat_10X2_NB , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_NB <- RunPCA(object = seurat_10X2_NB , do.print = FALSE )
+
+pca_NB <- PCAPlot_seurat( object = seurat_10X2_NB , dim1 = 1, dim2 = 2 )
+
+pca_NB
+
+PCAPlot_seurat( object = seurat_10X2_NB , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_NB <- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_NB , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_NB , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_NB <- TSNEPlot_Seurat(x = x , title = "NB") 
+
+gg_tsne_NB
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_OPC <- SubsetData(object = seurat_10X2 , ident.use = "OPC")
+seurat_10X2_OPC <- FindVariableGenes(object = seurat_10X2_OPC , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_OPC <- RunPCA(object = seurat_10X2_OPC , do.print = FALSE )
+
+pca_OPC <- PCAPlot_seurat( object = seurat_10X2_OPC , dim1 = 1, dim2 = 2 )
+
+pca_OPC
+
+PCAPlot_seurat( object = seurat_10X2_OPC , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_OPC <- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_OPC , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_OPC , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_OPC <- TSNEPlot_Seurat(x = x , title = "OPC") 
+
+gg_tsne_OPC
+```
+
+```{r fig.width=8, fig.height=8}
+seurat_10X2_OD <- SubsetData(object = seurat_10X2 , ident.use = "OD")
+seurat_10X2_OD <- FindVariableGenes(object = seurat_10X2_OD , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_10X2_OD <- RunPCA(object = seurat_10X2_OD , do.print = FALSE )
+
+pca_OD <- PCAPlot_seurat( object = seurat_10X2_OD , dim1 = 1, dim2 = 2 )
+
+pca_OD
+
+PCAPlot_seurat( object = seurat_10X2_OD , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_OD <- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_10X2_OD , pc.use = x , num.genes = 50 )} ) )
+
+x <- FetchData( object =  seurat_10X2_OD , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_OD <- TSNEPlot_Seurat(x = x , title = "OD") 
+
+gg_tsne_OD
+```
+
+## Gather all PCA plots
+
+```{r fig.height=20 , fig.width=20}
+grid.arrange(pca_q1,pca_q2,pca_a0,pca_a1,pca_a2,pca_tap,pca_NB,pca_OPC,pca_OD)
+```
+
+
+## Gather all t-SNE plots
+
+```{r fig.height=20 , fig.width=20}
+grid.arrange(gg_tsne_qNSC1 , gg_tsne_qNSC2 , gg_tsne_aNSC0 , gg_tsne_aNSC1 , gg_tsne_aNSC2 , gg_tsne_TAP , gg_tsne_NB , gg_tsne_OPC , gg_tsne_OD )
+```
+
+# Euclidean Distances between young and old cells
+
+Which celltypes do we have?
+
+```{r}
+celltypes <- names(celltype_colors)
+
+names(celltypes) <- celltypes 
+```
+
+Extract the cell annotation from the seurat object
+
+```{r}
+anno <- FetchData(object = seurat_10X2 , vars.all = c("age","celltype") )
+```
+
+
+Make a list of matrices with expression data per celltype
+
+```{r}
+data_matrix_celltypes <- lapply( X = celltypes, FUN = function(x){
+  
+                        # data_10X2_celltype <- FetchData(object = seurat_10X2 , vars.all = rownames(seurat_10X2@data) , cells.use = WhichCells(object = seurat_10X2 , ident = x) )
+  
+                        data_10X2_celltype <- FetchData(object = seurat_10X2 , vars.all = c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8") , cells.use = WhichCells(object = seurat_10X2 , ident = x)  )
+                        
+                        data_10X2_celltype
+                      })
+```
+
+Now we calculate the euclidean distance between all the samples from one celltype
+
+```{r}
+euc_dist_celltypes <- lapply( data_matrix_celltypes , FUN = function(x){as.matrix(dist(x = x, method = "euclidean" , upper = TRUE))} )
+```
+
+## Density of euclidean distances
+
+```{r}
+df.plot.list <- lapply( X = euc_dist_celltypes, FUN = function(x){
+                                            x %>% as.data.frame() %>% rownames_to_column("cell1") %>% gather(key = "cell2" , value = "euclidean_distance" , -cell1) %>% left_join( y = dplyr::rename(anno, age_cell1 = age) %>% rownames_to_column( var = "cell1") , by = "cell1" ) %>% left_join( y = dplyr::rename(anno, age_cell2 = age) %>% rownames_to_column( var = "cell2") , by = "cell2" ) %>% mutate(comparison = paste(age_cell1 , age_cell2 , sep = "_"))
+})
+```
+
+```{r}
+gg.list <- lapply( X = df.plot.list, FUN = function(x){
+                                            ggplot(data = x, mapping = aes(x = euclidean_distance , color = comparison)) + geom_density() + ggtitle( paste0(unique(as.character(x$celltype.x))) )
+})
+```
+
+### qNSC1
+
+```{r}
+print(gg.list[[1]])
+```
+
+### qNSC2
+
+```{r}
+print(gg.list[[2]])
+```
+
+### aNSC0
+
+```{r}
+print(gg.list[[3]])
+```
+
+### aNSC1
+
+```{r}
+print(gg.list[[4]])
+```
+
+### aNSC2
+
+```{r}
+print(gg.list[[5]])
+```
+
+### TAP
+
+```{r}
+print(gg.list[[6]])
+```
+
+### NB
+
+```{r}
+print(gg.list[[7]])
+```
+
+### OPC
+
+```{r}
+print(gg.list[[8]])
+```
+
+### OD
+
+```{r}
+print(gg.list[[9]])
+```
+
+# Euclidean Distances between celltypes
+
+```{r}
+celltype_comparisons <- list( qNSC1_qNSC2 = c("qNSC1","qNSC2") , qNSC2_aNSC0 = c("qNSC2","aNSC0") , aNSC0_aNSC1 = c("aNSC0","aNSC1") ,aNSC1_aNSC2 = c("aNSC1","aNSC2") ,aNSC2_TAP = c("aNSC2","TAP") , aNSC2_TAP = c("TAP","NB") , qNSC1_OD = c("qNSC1","OD") , qNSC1_aNSC2 = c("qNSC1","aNSC2")  )
+
+celltype_comparisons
+```
+
+Make a matrix of the data
+
+```{r}
+data_matrix_lineage <- lapply( X = celltype_comparisons, FUN = function(x){
+  
+                        # data_10X2_celltype <- FetchData(object = seurat_10X2 , vars.all = rownames(seurat_10X2@data) , cells.use = WhichCells(object = seurat_10X2 , ident = x) )
+                        
+                        data_10X2_celltype <- FetchData(object = seurat_10X2 , vars.all = c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8") , cells.use = WhichCells(object = seurat_10X2 , ident = x) )                      
+  
+                        data_10X2_celltype
+                      })
+```
+
+Now we calculate the euclidean distance between all the cells from the comparison
+
+```{r}
+euc_dist_lineage_all <- lapply( data_matrix_lineage , FUN = function(x){as.matrix(dist(x = x, method = "euclidean" , upper = TRUE))} )
+```
+
+
+### Density of euclidean distances
+
+```{r}
+df.plot.list_all <- lapply( X = euc_dist_lineage_all, FUN = function(x){
+                                            x %>% as.data.frame() %>% rownames_to_column("cell1") %>% gather(key = "cell2" , value = "euclidean_distance" , -cell1) %>% left_join( y = dplyr::rename(anno, age_cell1 = age) %>% rownames_to_column( var = "cell1") , by = "cell1" ) %>% left_join( y = dplyr::rename(anno, age_cell2 = age) %>% rownames_to_column( var = "cell2") , by = "cell2" ) %>% mutate(comparison = paste(celltype.x , celltype.y , sep = "_"))
+})
+```
+
+
+```{r}
+gg.list_all <- lapply( X = df.plot.list_all, FUN = function(x){
+                                            ggplot(data = x, mapping = aes(x = euclidean_distance , color = comparison)) + geom_density() + ggtitle( "" )
+})
+```
+
+```{r}
+print(gg.list_all[[1]])
+```
+
+```{r}
+print(gg.list_all[[2]])
+```
+
+```{r}
+print(gg.list_all[[3]])
+```
+
+```{r}
+print(gg.list_all[[4]])
+```
+
+```{r}
+print(gg.list_all[[5]])
+```
+
+
+# Euclidean distances young vs old with q1_q2 as reference
+
+```{r}
+q1_q2_euc_dist <- df.plot.list_all$qNSC1_qNSC2 %>% filter(comparison == "qNSC1_qNSC2")
+```
+
+
+```{r}
+df.plot.list_ref <- lapply( X = euc_dist_celltypes, FUN = function(x){
+                                            x  %>% as.data.frame() %>% rownames_to_column("cell1") %>% gather(key = "cell2" , value = "euclidean_distance" , -cell1) %>% left_join( y = dplyr::rename(anno, age_cell1 = age) %>% rownames_to_column( var = "cell1") , by = "cell1" ) %>% left_join( y = dplyr::rename(anno, age_cell2 = age) %>% rownames_to_column( var = "cell2") , by = "cell2" ) %>% mutate(comparison = paste(age_cell1 , age_cell2 , sep = "_")) %>% dplyr::mutate(type = as.character(celltype.x) ) %>% dplyr::select( cell1,cell2,euclidean_distance,comparison , type) %>% bind_rows(q1_q2_euc_dist %>% dplyr::mutate(type = as.character(celltype.x) ) %>% dplyr::select( cell1,cell2,euclidean_distance,comparison,type)) %>% dplyr::filter(comparison %in% c("old_old","young_old","young_young","qNSC1_qNSC2")) %>% mutate(comparison = factor(comparison , levels = c("old_old","young_old","young_young","qNSC1_qNSC2")))
+})
+```
+
+```{r}
+colors_comparisons <- c("old_old" = "slateblue" ,"young_old" = "deepskyblue4","young_young" = "olivedrab","qNSC1_qNSC2" = "black")
+
+gg.list <- lapply( X = df.plot.list_ref, FUN = function(x){
+                                            ggplot(data = x, mapping = aes(x = euclidean_distance , color = comparison , fill = comparison )) + geom_density( alpha = 0.3) + ggtitle( paste0(unique(as.character(x$type.x))) ) + xlab("Euclidean Distance") + ylab("Density") + scale_fill_manual(values = colors_comparisons) + scale_color_manual( values = colors_comparisons  ) + labs(color="Comparison",fill="Comparison") + ggtitle( paste0(unique(as.character(x$type))) )
+})
+```
+
+
+### qNSC1
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[1]])
+```
+
+### qNSC2
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[2]])
+```
+
+### aNSC0
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[3]])
+```
+
+### aNSC1
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[4]])
+```
+
+### aNSC2
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[5]])
+```
+
+### TAP
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[6]])
+```
+
+### NB
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[7]])
+```
+
+### OPC
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[8]])
+```
+
+### OD
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[9]])
+```
+
+# Euclidean distances between young and old in Pseudotime window
+
+First we subset our data to contain only the NSCs in individual tables for young and old.
+
+```{r}
+data_10_NSCs <- FetchData(object = seurat_10X2 , vars.all = c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8") , cells.use = WhichCells( object = seurat_10X2 , ident.remove = c("OPC","OD","NB","TAP") )  )
+
+meta_data_table <- FetchData(object = seurat_10X2 , vars.all = c("age","Pseudotime","celltype") , cells.use = WhichCells( object = seurat_10X2 , ident.remove = c("OPC","OD","NB","TAP") )  ) %>% rownames_to_column("cell")
+```
+
+```{r}
+eucl_distances_all_NSCs <- as.matrix( dist(data_10_NSCs , method = "euclidean" , upper = TRUE) )
+```
+
+```{r}
+pseudotime_diff = 2.5
+
+data_euclidean_distances <- lapply( X = rownames(data_10_NSCs)  , FUN = function(x){
+    require(dplyr)
+  
+    pseudotime_val <- meta_data_table %>% filter( cell == x  ) %>% pull("Pseudotime")
+  
+    age_cell <- meta_data_table %>% filter( cell == x  ) %>% pull("age")
+  
+    pseudotime_vals <- c( min = pseudotime_val - pseudotime_diff , value = pseudotime_val  , max = pseudotime_val + pseudotime_diff ) 
+    
+    cells2compare <- meta_data_table %>% filter( Pseudotime < pseudotime_vals["max"]  &  Pseudotime > pseudotime_vals["min"] ) 
+    
+    cells2compare_young <- cells2compare %>% filter( age == "young" & cell != x ) %>% pull("cell") 
+
+    cells2compare_old <- cells2compare %>% filter( age == "old" & cell != x ) %>% pull("cell")
+        
+  if(age_cell == "young"){
+    young_to_young <- data.frame( euclidean_distance = as.numeric(eucl_distances_all_NSCs[ cells2compare_young , x ]) , comparison = as.character("young_to_young") , Pseudotime = pseudotime_val ) 
+    
+    young_to_old <- data.frame( euclidean_distance = as.numeric(eucl_distances_all_NSCs[ cells2compare_old , x ]) , comparison = as.character("young_to_old") , Pseudotime = pseudotime_val )
+    
+    young_to_young$comparison <- as.character(young_to_young$comparison)
+    young_to_old$comparison <- as.character(young_to_old$comparison)
+    
+    data_comparisons <- bind_rows( young_to_young , young_to_old )
+    
+  }else{
+    data_comparisons <- data.frame( euclidean_distance = as.numeric(eucl_distances_all_NSCs[ cells2compare_old , x ]) , comparison = as.character("old_to_old") , Pseudotime = pseudotime_val )
+    
+    data_comparisons$comparison <- as.character(data_comparisons$comparison)
+    
+  }
+    
+  data_comparisons
+})
+```
+
+```{r}
+data_euclidean_distances_df <- bind_rows( data_euclidean_distances )
+```
+
+```{r}
+qNSC1_cells <- WhichCells( object = seurat_10X2 , ident = "qNSC1")
+qNSC2_cells <- WhichCells( object = seurat_10X2 , ident = "qNSC2")
+```
+
+
+```{r}
+pseudotime_diff = 2.5
+
+data_euclidean_distances_q1_q2_pseudotimewindow <- lapply( X = c(qNSC1_cells)  , FUN = function(x){
+    require(dplyr)
+  
+    pseudotime_val <- meta_data_table %>% filter( cell == x  ) %>% pull("Pseudotime")
+  
+    type_cell <- meta_data_table %>% filter( cell == x  ) %>% pull("celltype")
+  
+    pseudotime_vals <- c( min = pseudotime_val - pseudotime_diff , value = pseudotime_val  , max = pseudotime_val + pseudotime_diff ) 
+    
+    cells2compare <- meta_data_table %>% filter( Pseudotime < pseudotime_vals["max"]  &  Pseudotime > pseudotime_vals["min"] ) 
+    
+    cells2compare_q1 <- cells2compare %>% filter( celltype == "qNSC1" & cell != x ) %>% pull("cell") 
+
+    cells2compare_q2 <- cells2compare %>% filter( celltype == "qNSC2" & cell != x ) %>% pull("cell")
+        
+  if(type_cell == "qNSC1"){
+   
+    q1_to_q2 <- data.frame( euclidean_distance = as.numeric(eucl_distances_all_NSCs[ cells2compare_q2 , x ]) , comparison = as.character("qNSC1_vs_qNSC2") , Pseudotime = pseudotime_val )
+    
+    q1_to_q2$comparison <- as.character(q1_to_q2$comparison)
+    
+    data_comparisons <- q1_to_q2
+  }else{
+    stop("Error")
+  }
+    
+  data_comparisons
+})
+```
+
+```{r}
+data_euclidean_distances_df_q1_q2 <- bind_rows( data_euclidean_distances_q1_q2_pseudotimewindow )
+```
+
+## Merge the age comparisons with the all vs all comparison
+
+```{r}
+data_euclidean_distances_combined_df <- bind_rows( data_euclidean_distances_df , data_euclidean_distances_df_q1_q2  )
+
+data_euclidean_distances_combined_df <-  data_euclidean_distances_combined_df %>% group_by(comparison) %>% mutate( mean_euclidean_distance = mean(euclidean_distance) )
+```
+
+
+## Density of euclidean distances
+
+```{r}
+comparison_colors <- c("old_to_old" = "slateblue" ,"young_to_old" = "deepskyblue4","young_to_young" = "olivedrab","qNSC1_vs_qNSC2" = "black")
+```
+
+```{r}
+data_euclidean_distances_combined_df$comparison <- factor( data_euclidean_distances_combined_df$comparison , levels = c("qNSC1_vs_qNSC2" , "young_to_young" , "young_to_old" ,  "old_to_old" ) )
+```
+
+```{r fig.width=6, fig.height=6}
+gg_pseudotimewindow <- ggplot(data = data_euclidean_distances_combined_df , mapping = aes(x = euclidean_distance , color = comparison , fill = comparison )) + geom_density(alpha = 0.5) +  ggtitle( "Euclidean distances" )  + geom_vline(mapping = aes(xintercept = mean_euclidean_distance ) , color = "grey20" ) + facet_grid(facets = comparison ~ .) + scale_fill_manual(values =  comparison_colors , labels = c("qNSC1 to qNSC2" , "young to young" , "young to old" ,  "old to old" ) , name = "Comparison") + scale_color_manual(values =  comparison_colors , labels = c("qNSC1 to qNSC2" , "young to young" , "young to old" ,  "old to old" ) , name = "Comparison" ) + theme(strip.text.y = element_text(size = 8))
+
+gg_pseudotimewindow
+```
+
+# End
+
+```{r}
+sessionInfo()
+```

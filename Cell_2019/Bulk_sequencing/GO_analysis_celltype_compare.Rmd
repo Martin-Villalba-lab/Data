@@ -1,0 +1,330 @@
+---
+title: "GO analysis of the differentially expressed genes between old and young cells for different celltypes from Bulk sequencing"
+output: 
+  html_notebook: 
+    smart: no
+    toc: yes
+    toc_float: true
+    df_print: paged
+---
+
+```{r}
+library("tidyverse")
+library("clusterProfiler")
+library("readxl")
+```
+
+# Define function to run GO analysis and make a dotplot from the results
+
+## GO term analysis
+
+```{r fig.height=10, fig.width=20}
+GO_analysis <- function(DE_results_list , p_adj_cutoff = 0.05  ){
+  require("clusterProfiler")
+  
+  if( length(DE_results_list) < 1){
+    warning("No entries in DE_results_list")
+    invisible(DE_results_list)
+  }
+  
+  de_genes_list <-list(NULL)
+  for(i in seq_len(length(DE_results_list)) ){
+    de_genes <- DE_results_list[[i]] %>% dplyr::filter( p_adj < p_adj_cutoff ) %>% dplyr::pull(gene)
+    
+    de_genes_list[[ names(DE_results_list[i]) ]] <- bitr(geneID = de_genes , fromType = "SYMBOL" , toType = "ENTREZID" , OrgDb = "org.Mm.eg.db" )[,"ENTREZID"]
+  }
+
+    # available ontologies are:
+    # BP - biological_process
+    # CC - cellular_component
+    # MF - molecular_function
+    go_results <- compareCluster(geneClusters = de_genes_list , fun = "enrichGO" , OrgDb = "org.Mm.eg.db" , ont = "BP", pvalueCutoff = 0.05 )
+  
+    clusterProfiler::plot(go_results )
+      
+  return(go_results)
+}
+```
+
+
+Load the results of the differential expression tests and check the associated GO terms by enrichment analysis
+
+-----
+
+Population RNA-seq differentially expressed gene available:
+
+- Neural Stem Cells (NSCs)
+- Neuroblasts
+- Microglia
+- Endothelial Cells
+
+# Go Term analysis: diff. expr. genes in qNSCs and aNSCs in young and old mice from population RNA-Seq
+
+```{r warning=FALSE}
+DE_celltype_genes_NSCs <- readxl::read_xlsx(path = "DESeq2_results_old_vs_young/DEupregulatedpopulation/OLD_NSCs_UP.xlsx" , col_names = TRUE ) %>% dplyr::select(-starts_with(match = "X"))
+DE_celltype_genes_Neuroblasts <- readxl::read_xlsx(path = "DESeq2_results_old_vs_young/DEupregulatedpopulation/OLD_Neuroblasts_UP.xlsx" , col_names = TRUE ) %>% dplyr::select(-starts_with(match = "X"))
+DE_celltype_genes_Microglia <- readxl::read_xlsx(path = "DESeq2_results_old_vs_young/DEupregulatedpopulation/OLD_Microglia_UP.xlsx" , col_names = TRUE ) %>% dplyr::select(-starts_with(match = "X"))
+DE_celltype_genes_Endothelial <- readxl::read_xlsx(path = "DESeq2_results_old_vs_young/DEupregulatedpopulation/OLD_Endothelial_UP.xlsx" , col_names = TRUE  ) %>% dplyr::select(-starts_with(match = "X"))
+```
+
+-----
+
+Take a look at the different data tables we just loaded
+
+```{r}
+head(DE_celltype_genes_NSCs)
+head(DE_celltype_genes_Neuroblasts)
+head(DE_celltype_genes_Microglia)
+head(DE_celltype_genes_Endothelial)
+```
+
+
+```{r}
+celltype_order_nscs <- c("qNSC","aNSC")
+celltype_order_brain_celltypes <- c("NSCs","Neuroblasts","Microglia","Endothelial")
+
+celltype_order_combined <- c("NSCs","qNSC","aNSC","Neuroblasts","Microglia","Endothelial")
+```
+
+
+
+
+## NSCs, Neuroblasts, Microglia, Endothelial
+
+First we load all objects starting with DE_genes into one list with the object names becoming the list name identifiers and we filter the contained data frames for a value 0 or bigger in the avg_logFC column
+
+```{r}
+df_list_DE_genes_celltypes <- mget( paste( "DE_celltype_genes" , celltype_order_brain_celltypes , sep = "_") )
+df_list_DE_genes_celltypes <- lapply(df_list_DE_genes_celltypes, FUN = function(x){ 
+                                      x %>%  
+                                          rename_if(grepl("padj", names(.)), funs(sprintf("p_adj", .))) %>%
+                                          rename_if(grepl("adjust_Pvalue_BH", names(.)), funs(sprintf("p_adj", .))) %>%
+                                          rename_if(grepl("gene_symbol", names(.)), funs(sprintf("gene", .))) %>%
+                                          rename_if(grepl("gene_name", names(.)), funs(sprintf("gene", .))) %>%
+                                          mutate( gene = str_to_title(string = gene) , p_adj = as.numeric(p_adj))
+      } ) 
+```
+
+Now we can change the name of the list fields to just the celltypes ... 
+
+```{r}
+names(df_list_DE_genes_celltypes) <- str_replace(string = names(df_list_DE_genes_celltypes) , pattern = "^DE_celltype_genes_" ,replacement = "" )
+```
+
+and run GO_analysis function on it
+
+```{r}
+go_celltypes_brain_celltypes <- GO_analysis(DE_results_list = df_list_DE_genes_celltypes )
+```
+
+```{r fig.width=10}
+clusterProfiler::dotplot(go_celltypes_brain_celltypes , showCategory = 8)
+```
+
+```{r , fig.width=8, fig.height=7}
+gg_comp  <- clusterProfiler::plot(go_celltypes_brain_celltypes , showCategory = 8)
+
+gg_comp$data$Description <- fct_relabel( .f = gg_comp$data$Description , .fun = function(x){str_wrap(string = x , width = 40)} )
+
+plotdata <- gg_comp$data
+
+gg_comp_plot <- ggplot(data = plotdata , mapping = aes( x = Cluster , y = Description , size = GeneRatio , color = -log10(p.adjust) ) ) + geom_point() + theme_bw() + theme( axis.text.x = element_text(colour="black",size=11),
+        axis.text.y = element_text(colour="black",size=8,hjust=0.5) ) + scale_color_gradient(low = "blue" , high = "red"  , breaks = c(1,5,10,15) , limits = c(1,16) )  
+   
+
+gg_comp_plot
+```
+
+# Simplify GO terms
+```{r}
+go_celltypes_brain_celltypes.sim <- clusterProfiler::simplify(go_celltypes_brain_celltypes)
+```
+
+Plot comparison dotplot
+
+```{r fig.width=10}
+clusterProfiler::plot(go_celltypes_brain_celltypes.sim)
+```
+
+Change plot to show -log10(p.adjust) 
+
+```{r , fig.width=8, fig.height=7}
+gg1 <- clusterProfiler::plot(go_celltypes_brain_celltypes.sim)
+
+gg1$data$Description <- fct_relabel( .f = gg1$data$Description , .fun = function(x){str_wrap(string = x , width = 40)} )
+
+plotdata <- gg1$data
+
+gg_clusterCompare1 <- ggplot(data = plotdata , mapping = aes( x = Cluster , y = Description , size = GeneRatio , color = -log10(p.adjust) ) ) + geom_point() + theme_bw() + theme( axis.text.x = element_text(colour="black",size=11),
+        axis.text.y = element_text(colour="black",size=8,hjust=0.5) ) + scale_color_gradient(low = "blue" , high = "red"  , breaks = c(1,5,10,15) , limits = c(1,16) )  
+   
+
+gg_clusterCompare1
+```
+
+
+-----
+
+# GO terms for individual celltypes
+
+
+```{r fig.height=10, fig.width=20}
+GO_analysis_individual <- function(DE_results_list , p_adj_cutoff = 0.05  ){
+  require("clusterProfiler")
+  
+  if( length(DE_results_list) < 1){
+    warning("No entries in DE_results_list")
+    invisible(DE_results_list)
+  }
+  
+  de_genes <- DE_results_list %>% dplyr::filter( p_adj < p_adj_cutoff ) %>% dplyr::pull(gene)
+    
+  de_genes_names <- bitr(geneID = de_genes , fromType = "SYMBOL" , toType = "ENTREZID" , OrgDb = "org.Mm.eg.db" )[,"ENTREZID"]
+  
+
+    # available ontologies are:
+    # BP - biological_process
+    # CC - cellular_component
+    # MF - molecular_function
+    go_results <-  enrichGO(gene = de_genes_names , OrgDb = "org.Mm.eg.db" , ont = "BP" , pvalueCutoff = 0.05 )
+    
+  return(go_results)
+}
+```
+
+### NSC GO enrichment
+
+```{r}
+GO_results_NSC_Bulk <- GO_analysis_individual(DE_results_list = df_list_DE_genes_celltypes$NSCs )
+```
+
+```{r fig.width=20}
+barplot(GO_results_NSC_Bulk , showCategory = 50 , x = "count" , title = "GO Enrichment: NSCs Bulk - old vs. young")
+```
+
+```{r fig.width=20}
+barplot(GO_results_NSC_Bulk , showCategory = 50 , x = "GeneRatio" , title = "GO Enrichment: NSCs Bulk - old vs. young")
+```
+
+```{r}
+write.csv(x = GO_results_NSC_Bulk@result , file = "GO_enrichment_results/GO_Enrichment_NSCs_Bulk.csv" )
+```
+
+
+### Neuroblast GO enrichment
+
+```{r}
+GO_results_NB_Bulk <- GO_analysis_individual(DE_results_list = df_list_DE_genes_celltypes$Neuroblasts )
+```
+
+```{r fig.width=20}
+barplot(GO_results_NB_Bulk , showCategory = 50 , x = "count" , title = "GO Enrichment: Neuroblast Bulk - old vs. young")
+```
+
+```{r fig.width=20}
+barplot(GO_results_NB_Bulk , showCategory = 50 , x = "GeneRatio" , title = "GO Enrichment: Neuroblast Bulk - old vs. young")
+```
+
+```{r}
+write.csv(x = GO_results_NB_Bulk@result , file = "GO_enrichment_results/GO_Enrichment_Neuroblasts_Bulk.csv" )
+```
+
+### Microglia GO enrichment
+
+```{r}
+GO_results_Microglia_Bulk <- GO_analysis_individual(DE_results_list = df_list_DE_genes_celltypes$Microglia )
+```
+
+```{r fig.width=20}
+barplot(GO_results_Microglia_Bulk , showCategory = 50 , x = "count" , title = "GO Enrichment: Microglia Bulk - old vs. young")
+```
+
+```{r fig.width=20}
+barplot(GO_results_Microglia_Bulk , showCategory = 50 , x = "GeneRatio" , title = "GO Enrichment: Microglia Bulk - old vs. young")
+```
+
+```{r}
+write.csv(x = GO_results_Microglia_Bulk@result , file = "GO_enrichment_results/GO_Enrichment_Microglia_Bulk.csv" )
+```
+
+### Endothelial cells GO enrichment
+
+```{r}
+GO_results_Endothelial_Bulk <- GO_analysis_individual(DE_results_list = df_list_DE_genes_celltypes$Endothelial )
+```
+
+```{r fig.width=20}
+barplot(GO_results_Endothelial_Bulk , showCategory = 50 , x = "count" , title = "GO Enrichment: Endothelial Bulk - old vs. young")
+```
+
+```{r fig.width=20}
+barplot(GO_results_Endothelial_Bulk , showCategory = 50 , x = "GeneRatio" , title = "GO Enrichment: Endothelial Bulk - old vs. young")
+```
+
+```{r}
+write.csv(x = GO_results_Endothelial_Bulk@result , file = "GO_enrichment_results/GO_Enrichment_Endothelial_Bulk.csv" )
+```
+
+-----
+
+# Enrichment analysis for MSigDB Hallmark Genes
+
+```{r}
+library(msigdf)
+```
+
+Prepare GENE2TERM object
+```{r}
+MSigDB <- msigdf.mouse %>% transmute( ont = geneset, gene = mouse.symbol )
+
+MSigDB_hallmark <- MSigDB[ grepl( MSigDB$ont , pattern = "HALLMARK" ) , ]
+
+MSigDB_hallmark$gene <- as.factor(MSigDB_hallmark$gene)
+MSigDB_hallmark$ont <- as.factor(MSigDB_hallmark$ont)
+```
+
+## NSCs
+
+```{r}
+HALLMARK_enrichment_test_NSC <- enricher(gene = df_list_DE_genes_celltypes$NSCs$gene , TERM2GENE = MSigDB_hallmark , pvalueCutoff = 0.05 )
+```
+
+```{r}
+barplot(HALLMARK_enrichment_test_NSC , showCategory = 20)
+```
+
+## Neuroblasts
+
+```{r}
+HALLMARK_enrichment_test_NB <- enricher(gene = df_list_DE_genes_celltypes$Neuroblasts$gene , TERM2GENE = MSigDB_hallmark , pvalueCutoff = 0.05 )
+```
+
+```{r}
+barplot(HALLMARK_enrichment_test_NB , showCategory = 20)
+```
+
+## Microglia
+
+```{r}
+HALLMARK_enrichment_test_Microglia <- enricher(gene = df_list_DE_genes_celltypes$Microglia$gene , TERM2GENE = MSigDB_hallmark , pvalueCutoff = 0.05 )
+```
+
+```{r}
+barplot(HALLMARK_enrichment_test_Microglia , showCategory = 20)
+```
+
+## Endothelial Cells
+
+```{r}
+HALLMARK_enrichment_test_Endothelial <- enricher(gene = df_list_DE_genes_celltypes$Endothelial$gene , TERM2GENE = MSigDB_hallmark , pvalueCutoff = 0.05 )
+```
+
+```{r}
+barplot(HALLMARK_enrichment_test_Endothelial , showCategory = 20)
+```
+
+-----
+
+```{r}
+sessionInfo()
+```

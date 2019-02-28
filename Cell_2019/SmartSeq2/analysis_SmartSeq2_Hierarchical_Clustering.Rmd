@@ -1,0 +1,236 @@
+---
+title: "SmartSeq2 - Hierarchical clustering with data from young NSCs"
+output: 
+  html_document: 
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+library("tibble")
+library("dplyr")
+library("magrittr")
+library("pheatmap")
+```
+
+# Load the data
+
+```{r}
+data_smartseq2 <- read.csv(file = "count_table/TPM_NSCs.csv" , row.names = 1)
+```
+
+```{r}
+data_smartseq2 <- remove_rownames(df = data_smartseq2) %>% column_to_rownames( var ="ensembl_gene_id" ) %>% as.matrix()
+```
+
+```{r}
+data_smartseq2 <- log(data_smartseq2 + 1)
+```
+
+
+Load annotation of young NSCs
+
+```{r}
+annotation_smartseq2_young <- read.csv(file = "count_table/NSCs_annotation_young.csv" , row.names = 1)
+
+annotation_smartseq2_young <- remove_rownames(df = annotation_smartseq2_young) %>% column_to_rownames( var ="cell" )
+```
+
+Add the old NSCs to the table with age "old" and type NA
+
+```{r}
+old_cells <- grep( x = colnames(data_smartseq2) , pattern = "s_dot" , value = TRUE)
+
+anno_old <- data.frame(row.names = old_cells , type = rep( NA , length(old_cells) ) , age = rep( "old" , length(old_cells) ) )
+
+annotation_smartseq2_young <- rbind( annotation_smartseq2_young , anno_old )
+```
+
+
+
+# Hierarchical Clustering on genes from Llorens-Bobadilla et al. (2015) 
+
+We use the marker genes for the different NSC clusters from our previous publication (Llorens-Bobadilla et al., 2015)  to compare the data from old mice against the young mice and determine to which celltypes the new data belongs.
+
+```{r}
+genes_from_young_tab <- read.csv(file = "gene_lists/Genes_Markers_Heatmap.csv") 
+
+genes_from_young <- genes_from_young_tab %>% filter( cluster %in% 2:6 ) %>% pull(ensembl_gene_id) %>% as.character()
+```
+
+## Subset data
+
+```{r}
+data_smartseq2_sel <- data_smartseq2[genes_from_young,]
+```
+
+# Plot heatmap of all NSC specific genes
+
+```{r}
+pheatmap(mat = data_smartseq2 , annotation_col = annotation_smartseq2_young , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 2)
+```
+
+# Hierarchical Clustering on genes from quiescent clusters
+
+```{r}
+genes_from_young_qNSC <- genes_from_young_tab %>% filter( cluster %in% 2:3 ) %>% pull(ensembl_gene_id) %>% as.character()
+```
+
+## Subset data
+
+```{r}
+data_smartseq2_qNSC_genes <- data_smartseq2[genes_from_young_qNSC,]
+```
+
+```{r}
+pheatmap(mat = data_smartseq2_qNSC_genes , annotation_col = annotation_smartseq2_young , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 4)
+```
+
+# Hierarchical Clustering on genes from active clusters
+
+```{r}
+genes_from_young_aNSC <- genes_from_young_tab %>% filter( cluster %in% 4:5 ) %>% pull(ensembl_gene_id) %>% as.character()
+```
+
+## Subset data
+
+```{r}
+data_smartseq2_aNSC_genes <- data_smartseq2[genes_from_young_aNSC,]
+```
+
+```{r}
+pheatmap(mat = data_smartseq2_aNSC_genes , annotation_col = annotation_smartseq2_young , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 5)
+```
+
+# Hierarchical Clustering on genes from active NSC 2 cluster
+
+```{r}
+genes_from_young_aNSC2 <- genes_from_young_tab %>% filter( cluster %in% 5 ) %>% pull(ensembl_gene_id) %>% as.character()
+```
+
+## Subset data
+
+```{r}
+data_smartseq2_aNSC2_genes <- data_smartseq2[genes_from_young_aNSC2,]
+```
+
+```{r}
+pheatmap(mat = data_smartseq2_aNSC2_genes , annotation_col = annotation_smartseq2_young , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 3)
+```
+
+# Cluster only old data
+
+```{r}
+data_smartseq2_old <- data_smartseq2[,rownames(annotation_smartseq2_young[ annotation_smartseq2_young$age == "old" ,  ] )]
+```
+
+## Genes from qNSC
+
+```{r}
+data_smartseq2_old_qNSC_genes <- data_smartseq2_old[genes_from_young_qNSC,]
+```
+
+```{r}
+pheatmap(mat = data_smartseq2_old_qNSC_genes , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 3)
+```
+
+## Genes from aNSC
+
+```{r}
+data_smartseq2_old_aNSC_genes <- data_smartseq2_old[genes_from_young_aNSC,]
+```
+
+```{r}
+pheatmap(mat = data_smartseq2_old_aNSC_genes , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 4)
+```
+
+## Genes from aNSC
+
+```{r}
+data_smartseq2_old_aNSC2_genes <- data_smartseq2_old[genes_from_young_aNSC2,]
+```
+
+```{r}
+pheatmap(mat = data_smartseq2_old_aNSC2_genes , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = FALSE , scale = "row" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) , cutree_cols = 4)
+```
+
+# Heatmap of manually selected marker genes
+
+```{r}
+markers <- structure(c("ENSMUSG00000005360", "ENSMUSG00000021508", "ENSMUSG00000020644", 
+"ENSMUSG00000030342", "ENSMUSG00000048001", "ENSMUSG00000019803", 
+"ENSMUSG00000020122", "ENSMUSG00000020052", "ENSMUSG00000057841", 
+"ENSMUSG00000031004", "ENSMUSG00000041911", "ENSMUSG00000047139", 
+"ENSMUSG00000031285"), .Names = c("SLC1A3", "CXCL14", "ID2", 
+"CD9", "HES5", "NR2E1", "EGFR", "ASCL1", "RPL32", "MKI67", "DLX1", 
+"CD24A", "DCX"))
+
+markers
+```
+
+```{r}
+data_smartseq2_old_markers <- data_smartseq2_old[markers,]
+```
+
+```{r fig.width=20}
+pheatmap(mat = data_smartseq2_old_markers , clustering_method = "ward.D2" , cluster_rows = FALSE , show_rownames = TRUE , scale = "none" , annotation_colors = list(type = c(q1 = "green" , q2 = "red" , a1 = "blue" , a2 = "yellow")) )
+```
+
+# Assign celltypes
+
+Based on the cluster associations when clustering with the different gene sets above and examination of marker gene expression we assign the cell types q1, q2, a1 and a2 to the cells in the old dataset.
+
+```{r}
+qNSC1 <- c("s_dot_ogp2_dot_48", "s_dot_ogp2_dot_34", "s_dot_ogp2_dot_80", 
+"s_dot_ogp36", "s_dot_ogp2_dot_29", "s_dot_ogp2_dot_9", "s_dot_ogp43", 
+"s_dot_ogp2_dot_30", "s_dot_ogp94", "s_dot_ogp35", "s_dot_ogp99", 
+"s_dot_ogp2_dot_93", "s_dot_ogp1", "s_dot_ogp51", "s_dot_ogp33", 
+"s_dot_ogp61", "s_dot_ogp38", "s_dot_ogp40", "s_dot_ogp109", 
+"s_dot_ogp28", "s_dot_ogp64", "s_dot_ogp102", "s_dot_ogp65", 
+"s_dot_ogp67", "s_dot_ogp75", "s_dot_ogp66", "s_dot_ogp96", "s_dot_ogp2_dot_33", 
+"s_dot_ogp2_dot_31", "s_dot_ogp106", "s_dot_ogp9", "s_dot_ogp2_dot_21", 
+"s_dot_ogp2_dot_36", "s_dot_ogp2_dot_49", "s_dot_ogp2_dot_63", 
+"s_dot_ogp2_dot_25", "s_dot_ogp2_dot_18", "s_dot_ogp100", "s_dot_ogp86", 
+"s_dot_ogp83", "s_dot_ogp2_dot_37", "s_dot_ogp2_dot_8", "s_dot_ogp2_dot_24", 
+"s_dot_ogp25", "s_dot_ogp7", "s_dot_ogp53", "s_dot_ogp2_dot_81", 
+"s_dot_ogp2_dot_17", "s_dot_ogp69", "s_dot_ogp2_dot_5", "s_dot_ogp47", 
+"s_dot_ogp48", "s_dot_ogp46", "s_dot_ogp110", "s_dot_ogp2_dot_7", 
+"s_dot_ogp2_dot_3", "s_dot_ogp82", "s_dot_ogp2_dot_66", "s_dot_ogp2_dot_46", 
+"s_dot_ogp2_dot_54", "s_dot_ogp2_dot_50", "s_dot_ogp107", "s_dot_ogp4", 
+"s_dot_ogp2_dot_73", "s_dot_ogp2_dot_84", "s_dot_ogp2_dot_82", 
+"s_dot_ogp2_dot_59", "s_dot_ogp2_dot_19", "s_dot_ogp2_dot_47", 
+"s_dot_ogp2_dot_69", "s_dot_ogp2_dot_56", "s_dot_ogp2_dot_74", 
+"s_dot_ogp2_dot_95", "s_dot_ogp2_dot_78", "s_dot_ogp2_dot_55", 
+"s_dot_ogp50", "s_dot_ogp56", "s_dot_ogp2_dot_92", "s_dot_ogp37", 
+"s_dot_ogp2_dot_57", "s_dot_ogp2_dot_83", "s_dot_ogp55", "s_dot_ogp2_dot_90", 
+"s_dot_ogp5", "s_dot_ogp2_dot_68", "s_dot_ogp2_dot_15", "s_dot_ogp2_dot_22", 
+"s_dot_ogp2_dot_67", "s_dot_ogp2_dot_53", "s_dot_ogp2_dot_85", 
+"s_dot_ogp2_dot_52", "s_dot_ogp21", "s_dot_ogp34", "s_dot_ogp2_dot_96", 
+"s_dot_ogp2_dot_35", "s_dot_ogp2_dot_72")
+```
+
+```{r}
+qNSC2 <- c("s_dot_ogp2_dot_40", "s_dot_ogp2_dot_70", "s_dot_ogp89", "s_dot_ogp41", 
+"s_dot_ogp15", "s_dot_ogp71", "s_dot_ogp45", "s_dot_ogp2_dot_2", 
+"s_dot_ogp3", "s_dot_ogp12", "s_dot_ogp2_dot_11", "s_dot_ogp2_dot_87", 
+"s_dot_ogp22", "s_dot_ogp2_dot_41", "s_dot_ogp2_dot_38", "s_dot_ogp2_dot_39", 
+"s_dot_ogp27")
+```
+
+```{r}
+aNSC1 <- c("s_dot_ogp111", "s_dot_ogp54", "s_dot_ogp63", "s_dot_ogp19", 
+"s_dot_ogp68", "s_dot_ogp39", "s_dot_ogp2_dot_79", "s_dot_ogp77", 
+"s_dot_ogp2_dot_6", "s_dot_ogp32")
+```
+
+```{r}
+aNSC2 <- c("s_dot_ogp2_dot_43", "s_dot_ogp31", "s_dot_ogp52", "s_dot_ogp2_dot_44", 
+"s_dot_ogp81", "s_dot_ogp80", "s_dot_ogp73", "s_dot_ogp92", "s_dot_ogp74", 
+"s_dot_ogp20")
+```
+
+
+# SessionInfo
+
+```{r}
+sessionInfo()
+```

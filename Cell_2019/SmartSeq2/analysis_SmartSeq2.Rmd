@@ -1,0 +1,2109 @@
+---
+title: "Analysis of old and young neural stem cells sequenced with the SmartSeq2 protocol"
+output: 
+  html_notebook: 
+    smart: no
+    df_print: paged
+---
+
+# Load data for young and old neural stem cells sequenced with the Smart-Seq2 protocol
+
+```{r}
+NSCs_annotation <- read.csv(file = "count_table/NSCs_annotation.csv" , row.names = 1)
+
+TPM_NSCs <- read.csv(file = "count_table/TPM_NSCs.csv" , row.names = 1)
+```
+
+Make the cell names also rownames
+
+```{r}
+rownames(NSCs_annotation) <- NSCs_annotation$cell
+
+head( NSCs_annotation )
+```
+
+# Load the R packages needed for the analysis
+
+We need the Matrix package to use sparse matrices to save memory while computing. The ggplot2 package is used for plotting. Seurat is used to create PCA and tSNE plots. 
+
+```{r}
+require(Matrix)
+require(tidyverse)
+require(ggplot2)
+require(gridExtra)
+
+require(clusterProfiler)
+require(Seurat)
+```
+
+```{r}
+set.seed(123)
+```
+
+Load the monocle pseudotime results
+
+```{r}
+pseudotime_ordering <- read.csv(file = "Monocle/pseudotime_ordering.csv" , row.names = 1 )
+```
+
+
+# Check innate immune response and interferon response GO category genes
+
+## Create a Seurat object using the TPM values for the SmartSeq2 data and use the same normalization strategy as for the 10X sequencing run.
+
+Use the TPM data.frame to initialize a Seurat object
+
+```{r}
+TPM_NSC <- remove_rownames(TPM_NSCs) %>% column_to_rownames( var = "ensembl_gene_id")
+
+seurat_sms2 <- CreateSeuratObject(raw.data = TPM_NSC  , min.cells = 3, project = "young_vs_old_SmartSeq2")
+```
+
+Set identity to NSC to begin with.
+
+```{r}
+seurat_sms2 <- SetIdent(object = seurat_sms2 , ident.use = "NSC")
+```
+
+
+```{r}
+VlnPlot(object = seurat_sms2, features.plot = c("nGene", "nUMI"))
+```
+
+Add metadata: age of the animal, cell name and celltype (activation state)
+
+```{r}
+seurat_sms2 <- AddMetaData(object = seurat_sms2, metadata = NSCs_annotation )
+```
+
+Log-normalize the TPM data
+
+```{r}
+seurat_sms2 <- NormalizeData(object = seurat_sms2, normalization.method = "LogNormalize")
+```
+
+
+```{r results='hide'}
+seurat_sms2 <- ScaleData(object = seurat_sms2, vars.to.regress = c("nUMI", "nGene"))
+```
+
+### Regress out difference between S phase and G2/M Phase
+
+First we load the genes related to the cell cycle phases G2/M and S and make them matching to the gene symbols in the dataset by converting to ENSEMBL_IDs . 
+
+```{r}
+s.genes <- bitr(geneID = stringr::str_to_title(cc.genes$s.genes) , fromType = "SYMBOL" , toType = "ENSEMBL" ,drop = FALSE ,OrgDb = "org.Mm.eg.db")
+
+g2m.genes <- bitr(geneID = stringr::str_to_title(cc.genes$g2m.genes) , fromType = "SYMBOL" , toType = "ENSEMBL" ,drop = FALSE ,OrgDb = "org.Mm.eg.db")
+
+seurat_sms2 <- CellCycleScoring(object = seurat_sms2, s.genes = s.genes$ENSEMBL , g2m.genes = g2m.genes$ENSEMBL , set.ident = FALSE)
+```
+
+Then we calculate the difference between the cell cycle scores and regress our data on that difference.
+
+```{r}
+seurat_sms2@meta.data$CC.Difference <- seurat_sms2@meta.data$S.Score - seurat_sms2@meta.data$G2M.Score
+
+seurat_sms2 <- ScaleData(object = seurat_sms2, vars.to.regress = "CC.Difference", display.progress = FALSE)
+```
+
+## Load a list of genes from the innate immune response GO category 
+
+```{r}
+results_interferon_response_immune <- structure(list(mgi_symbol = c("Uba7", "Ube2l6", "Ube2e1", "Ube2e2", 
+"Isg15", "Ikbke", "Setd2", "A230050P20Rik", "Mx2", "Shmt2", "Irgm2", 
+"Dnaja3", "Kynu", "Bst2", "Sec61a1", "Cited1", "H2-Aa", "Slc11a1", 
+"Gch1", "Ubd", "Il23r", "Slc30a8", "Cxcl16", "Cyp27b1", "Trim21", 
+"Ifitm2", "Ifitm1", "Ifitm3", "Adamts13", "Tgtp2", "Tgtp1", "Snca", 
+"Cd40", "Mefv", "Ciita", "Klhl20", "Adar", "Ifnar2", "Eif2ak2", 
+"Plscr1", "Lamp3", "Xaf1", "Stat1", "S100a8", "Trdc", "S100a9", 
+"Aim2", "Mb21d1", "Irf1", "Pglyrp4", "Sdhaf4", "Ddx3x", "Defb1", 
+"Serinc5", "Ddx58", "Defb12", "Defb34", "Nlrp10", "Rela", "Gata3", 
+"Csf1r", "Igha", "Defb15", "Rnase6", "Defb35", "Defb13", "Pglyrp3", 
+"Ighg2c", "Krt16", "Tril", "Nlrp9c", "Bpifb3", "Pik3ca", "Nlrp1a", 
+"Nlrp9b", "Ighg3", "Ighd", "Ighm", "Nlrp1b", "Cfi", "Ly96", "Jchain", 
+"C8b", "Nlrx1", "Cybb", "Pml", "C8a", "Tnk1", "Polr3c", "Il1rap", 
+"Rbm14", "Polr3e", "Anxa1", "Cfd", "Ifnk", "Fcnb", "Nr1h4", "Defb43", 
+"Nono", "5730559C18Rik", "Hmgb3", "Defb30", "Sh2d1b2", "Ighv5-2", 
+"Ighv2-2", "Tnfaip8l2", "Tarm1", "Ighv5-4", "Bpifa1", "Nod2", 
+"Ighv2-3", "Otulin", "Ighv5-6", "Bpifb1", "Ifi202b", "Ighv5-9", 
+"Fcgr1", "Trim28", "Arg1", "Trbc1", "Pik3cg", "Defb18", "Defb41", 
+"Ighv2-5", "Ighv5-12", "Ighv2-6", "Ighv5-9-1", "Polr3g", "Cyld", 
+"Sh2d1a", "Zap70", "Ifit3", "Rsad2", "Msrb1", "Ifit1", "Cr1l", 
+"Cfp", "Sp110", "Trbc2", "Casp4", "Nod1", "Sla2", "Smpdl3b", 
+"Tlr5", "Ighv5-12-4", "Ighv2-9-1", "Axl", "Map3k5", "Cd55", "Blk", 
+"Myd88", "Tnfsf4", "Ighv2-6-8", "Ighv2-7", "Ighv5-15", "Ighv5-16", 
+"Ighv5-17", "Ighv2-9", "Irf5", "Ighv7-1", "Ighv7-2", "Ighv14-1", 
+"Ighv4-1", "Ighv3-1", "Ighv11-1", "Trim11", "Sla", "Ighv14-2", 
+"Ighv11-2", "Ighv14-3", "Trim14", "Ighv16-1", "Ighv9-1", "Dhx58", 
+"Trim13", "Pqbp1", "Cyba", "Ighv9-2", "Ighv9-3", "Ighv7-3", "Ankhd1", 
+"Ighv14-4", "Ighv3-3", "Oasl2", "Ighv7-4", "Ighv3-4", "Nrros", 
+"Tlr13", "Fes", "Ticam1", "Ighv3-6", "Ighv9-4", "Apobec3", "Ighv3-8", 
+"Ighv13-2", "Ankrd17", "Trim15", "Ighv12-3", "Ighv6-3", "Oasl1", 
+"Trim10", "Tlr1", "Ighv6-4", "C4bp", "Trim5", "Tlr6", "Trim31", 
+"Polr3b", "Mavs", "Vnn1", "Apcs", "Akirin2", "Ssc5d", "Trim12a", 
+"Polr3d", "Clec5a", "Fgg", "Dab2ip", "Hmgb2", "Fga", "Fgb", "Trim12c", 
+"Fgr", "Ipo7", "Mst1r", "Trim30b", "Trim30c", "Sfpq", "Il34", 
+"Trim25", "Trim30a", "Trim30d", "Pspc1", "Card9", "Mbl1", "Ptk2", 
+"Lcn2", "Abl1", "Sftpd", "Tlr8", "Pycard", "Ighv6-5", "Tlr2", 
+"Ighv6-6", "Ighv6-7", "Serping1", "Tlr7", "Src", "Ighv8-2", "Iglc1", 
+"Ighv10-1", "Ighv1-4", "Il1f6", "Iglc4", "Ighv1-5", "Ighv10-3", 
+"Ighv1-7", "Iglc2", "Defb23", "Gper1", "Cnpy3", "Trdv4", "Defb20", 
+"Defb22", "Defb26", "Defb28", "Il1f5", "Defb29", "Ighv15-2", 
+"Ighv1-9", "Defb21", "Itch", "Pglyrp1", "Nfkb1", "Defb19", "Defb45", 
+"Il1rl2", "Defb36", "Mid2", "Defb25", "Ighv1-11", "Ighv1-12", 
+"Ighv1-15", "Ighv1-16", "Grb2", "Ighv1-18", "Ighv1-19", "Ighv1-20", 
+"Map4k2", "Il1f8", "Pik3cb", "Adam15", "Ighv1-22", "Bcl10", "Ighv1-23", 
+"Ighv1-24", "Ighv1-26", "Prkdc", "Irak4", "F2rl1", "Adgrb1", 
+"Isg20", "C1qb", "C1qc", "C1qa", "Mr1", "Polr3a", "Tlr9", "Ighv1-76", 
+"Optn", "Ighv1-77", "Ptx3", "Ighv1-78", "Zbtb1", "Grap", "Lbp", 
+"Arhgef2", "Mcoln2", "Ighv1-80", "Tbk1", "Ighv1-81", "Ifih1", 
+"Ighv1-31", "Bmx", "Ighv1-82", "Ighv1-34", "Ly86", "Nlrc5", "Ighv1-85", 
+"Polr3f", "Ighv1-36", "Ighv1-37", "Tlr11", "Trim27", "Malt1", 
+"Fadd", "Ighv1-39", "Ighv1-42", "Ighv1-43", "Btk", "Dcst1", "Parp14", 
+"Ighv1-47", "Ighv8-4", "Ighv1-49", "Itk", "Ighv8-5", "Ighv1-50", 
+"Trim26", "Chid1", "Csk", "Fcer1g", "Ighv1-52", "Ighv1-53", "Ighv8-6", 
+"Naip2", "Nlrp3", "C8g", "Ighv1-54", "Csf1", "Traf3", "Ighv1-55", 
+"Ighv1-56", "Elf4", "Dtx3l", "Irak1", "Naip6", "Parp9", "Ighv8-8", 
+"Ighv1-58", "Pik3cd", "Hck", "Ighv1-59", "Cd180", "Irf3", "Ighv1-61", 
+"Ighv1-62-1", "Ifnl2", "Relb", "Ifnl3", "Fyn", "Ighv1-62-2", 
+"Ighv1-62-3", "Hmgb1", "Tlr12", "Ighv8-9", "Yes1", "Ighv1-63", 
+"Ighv1-64", "Tbkbp1", "Siglecg", "Ighv8-11", "Ighv1-66", "Cfh", 
+"Zc3hav1", "Ighv1-67", "Ighv1-69", "Ighv8-12", "Havcr2", "4933415F23Rik", 
+"Trim32", "Ighv8-13", "C3", "Ighv1-74", "Trim62", "Hexim1", "Matr3", 
+"Ighv1-75", "Slpi", "Zfp809", "Igll1", "Arid5a", "Tollip", "Tlr4", 
+"Syk", "C4b", "Cd244", "Fbxo9", "Ly9", "Ifnb1", "Zfp683", "Ifna15", 
+"Ifna9", "Ifna14", "Ifna12", "Lck", "Serinc3", "Nlrp6", "Camp", 
+"Ifna13", "Ifna16", "Ifnab", "Lyn", "Gm13271", "Gm13283", "Gm13290", 
+"Gm13289", "Gm13272", "Cd24a", "Spon2", "Lgr4", "Ifnz", "Gm13276", 
+"Gm13277", "Gm13278", "Tlr3", "Gm13275", "Gm13279", "Gm13285", 
+"Gm13287", "Gm13288", "Ifna11", "Ifna4", "Oas2", "Prkd1", "Oas3", 
+"Slamf1", "Marco", "Ifne", "Rarres2", "Clec4a2", "Treml4", "Oas1a", 
+"Slamf6", "Fcna", "Sarm1", "Atg5", "Trim59", "Clec4n", "Herc6", 
+"Ripk2", "Irgm1", "Prdm1", "Hc", "Clec4d", "Clec4e", "Ticam2", 
+"Trem2", "Il27", "Frk", "Mif", "Ptk2b", "C1rl", "Irf7", "C1ra", 
+"C1rb", "C1s2", "Polr3k", "Zbp1", "Trim35", "Il23a", "C2", "Cfb", 
+"Padi4", "Cactin", "Masp2", "Klrg1", "Arg2", "Ptk6", "Clec7a", 
+"Rnf135", "Txk", "Klrk1", "Sec14l1", "Crcp", "Styk1", "Tmem173", 
+"Atg12", "Gm17416", "Iigp1", "Polr3h", "Riok3", "Cd14", "Gm5849", 
+"Mbl2", "Akap8", "Xrcc5", "Nfkb2", "Masp1", "Trim8", "Pcbp2", 
+"Ppp1r14b", "Gsdmd", "Fer", "Grap2", "Nlrc4", "Map4k2"), external_gene_name = c("Uba7", 
+"Ube2l6", "Ube2e1", "Ube2e2", "Isg15", "Ikbke", "Setd2", "A230050P20Rik", 
+"Mx2", "Shmt2", "Irgm2", "Dnaja3", "Kynu", "Bst2", "Sec61a1", 
+"Cited1", "H2-Aa", "Slc11a1", "Gch1", "Ubd", "Il23r", "Slc30a8", 
+"Cxcl16", "Cyp27b1", "Trim21", "Ifitm2", "Ifitm1", "Ifitm3", 
+"Adamts13", "Tgtp2", "Tgtp1", "Snca", "Cd40", "Mefv", "Ciita", 
+"Klhl20", "Adar", "Ifnar2", "Eif2ak2", "Plscr1", "Lamp3", "Xaf1", 
+"Stat1", "S100a8", "Trdc", "S100a9", "Aim2", "Mb21d1", "Irf1", 
+"Pglyrp4", "Sdhaf4", "Ddx3x", "Defb1", "Serinc5", "Ddx58", "Defb12", 
+"Defb34", "Nlrp10", "Rela", "Gata3", "Csf1r", "Igha", "Defb15", 
+"Rnase6", "Defb35", "Defb13", "Pglyrp3", "Ighg2c", "Krt16", "Tril", 
+"Nlrp9c", "Bpifb3", "Pik3ca", "Nlrp1a", "Nlrp9b", "Ighg3", "Ighd", 
+"Ighm", "Nlrp1b", "Cfi", "Ly96", "Jchain", "C8b", "Nlrx1", "Cybb", 
+"Pml", "C8a", "Tnk1", "Polr3c", "Il1rap", "Rbm14", "Polr3e", 
+"Anxa1", "Cfd", "Ifnk", "Fcnb", "Nr1h4", "Defb43", "Nono", "5730559C18Rik", 
+"Hmgb3", "Defb30", "Sh2d1b2", "Ighv5-2", "Ighv2-2", "Tnfaip8l2", 
+"Tarm1", "Ighv5-4", "Bpifa1", "Nod2", "Ighv2-3", "Otulin", "Ighv5-6", 
+"Bpifb1", "Ifi202b", "Ighv5-9", "Fcgr1", "Trim28", "Arg1", "Trbc1", 
+"Pik3cg", "Defb18", "Defb41", "Ighv2-5", "Ighv5-12", "Ighv2-6", 
+"Ighv5-9-1", "Polr3g", "Cyld", "Sh2d1a", "Zap70", "Ifit3", "Rsad2", 
+"Msrb1", "Ifit1", "Cr1l", "Cfp", "Sp110", "Trbc2", "Casp4", "Nod1", 
+"Sla2", "Smpdl3b", "Tlr5", "Ighv5-12-4", "Ighv2-9-1", "Axl", 
+"Map3k5", "Cd55", "Blk", "Myd88", "Tnfsf4", "Ighv2-6-8", "Ighv2-7", 
+"Ighv5-15", "Ighv5-16", "Ighv5-17", "Ighv2-9", "Irf5", "Ighv7-1", 
+"Ighv7-2", "Ighv14-1", "Ighv4-1", "Ighv3-1", "Ighv11-1", "Trim11", 
+"Sla", "Ighv14-2", "Ighv11-2", "Ighv14-3", "Trim14", "Ighv16-1", 
+"Ighv9-1", "Dhx58", "Trim13", "Pqbp1", "Cyba", "Ighv9-2", "Ighv9-3", 
+"Ighv7-3", "Ankhd1", "Ighv14-4", "Ighv3-3", "Oasl2", "Ighv7-4", 
+"Ighv3-4", "Nrros", "Tlr13", "Fes", "Ticam1", "Ighv3-6", "Ighv9-4", 
+"Apobec3", "Ighv3-8", "Ighv13-2", "Ankrd17", "Trim15", "Ighv12-3", 
+"Ighv6-3", "Oasl1", "Trim10", "Tlr1", "Ighv6-4", "C4bp", "Trim5", 
+"Tlr6", "Trim31", "Polr3b", "Mavs", "Vnn1", "Apcs", "Akirin2", 
+"Ssc5d", "Trim12a", "Polr3d", "Clec5a", "Fgg", "Dab2ip", "Hmgb2", 
+"Fga", "Fgb", "Trim12c", "Fgr", "Ipo7", "Mst1r", "Trim30b", "Trim30c", 
+"Sfpq", "Il34", "Trim25", "Trim30a", "Trim30d", "Pspc1", "Card9", 
+"Mbl1", "Ptk2", "Lcn2", "Abl1", "Sftpd", "Tlr8", "Pycard", "Ighv6-5", 
+"Tlr2", "Ighv6-6", "Ighv6-7", "Serping1", "Tlr7", "Src", "Ighv8-2", 
+"Iglc1", "Ighv10-1", "Ighv1-4", "Il1f6", "Iglc4", "Ighv1-5", 
+"Ighv10-3", "Ighv1-7", "Iglc2", "Defb23", "Gper1", "Cnpy3", "Trdv4", 
+"Defb20", "Defb22", "Defb26", "Defb28", "Il1f5", "Defb29", "Ighv15-2", 
+"Ighv1-9", "Defb21", "Itch", "Pglyrp1", "Nfkb1", "Defb19", "Defb45", 
+"Il1rl2", "Defb36", "Mid2", "Defb25", "Ighv1-11", "Ighv1-12", 
+"Ighv1-15", "Ighv1-16", "Grb2", "Ighv1-18", "Ighv1-19", "Ighv1-20", 
+"Map4k2", "Il1f8", "Pik3cb", "Adam15", "Ighv1-22", "Bcl10", "Ighv1-23", 
+"Ighv1-24", "Ighv1-26", "Prkdc", "Irak4", "F2rl1", "Adgrb1", 
+"Isg20", "C1qb", "C1qc", "C1qa", "Mr1", "Polr3a", "Tlr9", "Ighv1-76", 
+"Optn", "Ighv1-77", "Ptx3", "Ighv1-78", "Zbtb1", "Grap", "Lbp", 
+"Arhgef2", "Mcoln2", "Ighv1-80", "Tbk1", "Ighv1-81", "Ifih1", 
+"Ighv1-31", "Bmx", "Ighv1-82", "Ighv1-34", "Ly86", "Nlrc5", "Ighv1-85", 
+"Polr3f", "Ighv1-36", "Ighv1-37", "Tlr11", "Trim27", "Malt1", 
+"Fadd", "Ighv1-39", "Ighv1-42", "Ighv1-43", "Btk", "Dcst1", "Parp14", 
+"Ighv1-47", "Ighv8-4", "Ighv1-49", "Itk", "Ighv8-5", "Ighv1-50", 
+"Trim26", "Chid1", "Csk", "Fcer1g", "Ighv1-52", "Ighv1-53", "Ighv8-6", 
+"Naip2", "Nlrp3", "C8g", "Ighv1-54", "Csf1", "Traf3", "Ighv1-55", 
+"Ighv1-56", "Elf4", "Dtx3l", "Irak1", "Naip6", "Parp9", "Ighv8-8", 
+"Ighv1-58", "Pik3cd", "Hck", "Ighv1-59", "Cd180", "Irf3", "Ighv1-61", 
+"Ighv1-62-1", "Ifnl2", "Relb", "Ifnl3", "Fyn", "Ighv1-62-2", 
+"Ighv1-62-3", "Hmgb1", "Tlr12", "Ighv8-9", "Yes1", "Ighv1-63", 
+"Ighv1-64", "Tbkbp1", "Siglecg", "Ighv8-11", "Ighv1-66", "Cfh", 
+"Zc3hav1", "Ighv1-67", "Ighv1-69", "Ighv8-12", "Havcr2", "4933415F23Rik", 
+"Trim32", "Ighv8-13", "C3", "Ighv1-74", "Trim62", "Hexim1", "Matr3", 
+"Ighv1-75", "Slpi", "Zfp809", "Igll1", "Arid5a", "Tollip", "Tlr4", 
+"Syk", "C4b", "Cd244", "Fbxo9", "Ly9", "Ifnb1", "Zfp683", "Ifna15", 
+"Ifna9", "Ifna14", "Ifna12", "Lck", "Serinc3", "Nlrp6", "Camp", 
+"Ifna13", "Ifna16", "Ifnab", "Lyn", "Gm13271", "Gm13283", "Gm13290", 
+"Gm13289", "Gm13272", "Cd24a", "Spon2", "Lgr4", "Ifnz", "Gm13276", 
+"Gm13277", "Gm13278", "Tlr3", "Gm13275", "Gm13279", "Gm13285", 
+"Gm13287", "Gm13288", "Ifna11", "Ifna4", "Oas2", "Prkd1", "Oas3", 
+"Slamf1", "Marco", "Ifne", "Rarres2", "Clec4a2", "Treml4", "Oas1a", 
+"Slamf6", "Fcna", "Sarm1", "Atg5", "Trim59", "Clec4n", "Herc6", 
+"Ripk2", "Irgm1", "Prdm1", "Hc", "Clec4d", "Clec4e", "Ticam2", 
+"Trem2", "Il27", "Frk", "Mif", "Ptk2b", "C1rl", "Irf7", "C1ra", 
+"C1rb", "C1s2", "Polr3k", "Zbp1", "Trim35", "Il23a", "C2", "Cfb", 
+"Padi4", "Cactin", "Masp2", "Klrg1", "Arg2", "Ptk6", "Clec7a", 
+"Rnf135", "Txk", "Klrk1", "Sec14l1", "Crcp", "Styk1", "Tmem173", 
+"Atg12", "Gm17416", "Iigp1", "Polr3h", "Riok3", "Cd14", "Gm5849", 
+"Mbl2", "Akap8", "Xrcc5", "Nfkb2", "Masp1", "Trim8", "Pcbp2", 
+"Ppp1r14b", "Gsdmd", "Fer", "Grap2", "Nlrc4", "Map4k2"), ensembl_gene_id = c("ENSMUSG00000032596", 
+"ENSMUSG00000027078", "ENSMUSG00000021774", "ENSMUSG00000058317", 
+"ENSMUSG00000035692", "ENSMUSG00000042349", "ENSMUSG00000044791", 
+"ENSMUSG00000038884", "ENSMUSG00000023341", "ENSMUSG00000025403", 
+"ENSMUSG00000069874", "ENSMUSG00000004069", "ENSMUSG00000026866", 
+"ENSMUSG00000046718", "ENSMUSG00000030082", "ENSMUSG00000051159", 
+"ENSMUSG00000036594", "ENSMUSG00000026177", "ENSMUSG00000037580", 
+"ENSMUSG00000035186", "ENSMUSG00000049093", "ENSMUSG00000022315", 
+"ENSMUSG00000018920", "ENSMUSG00000006724", "ENSMUSG00000030966", 
+"ENSMUSG00000060591", "ENSMUSG00000025491", "ENSMUSG00000025492", 
+"ENSMUSG00000014852", "ENSMUSG00000078921", "ENSMUSG00000078922", 
+"ENSMUSG00000025889", "ENSMUSG00000017652", "ENSMUSG00000022534", 
+"ENSMUSG00000022504", "ENSMUSG00000026705", "ENSMUSG00000027951", 
+"ENSMUSG00000022971", "ENSMUSG00000024079", "ENSMUSG00000032369", 
+"ENSMUSG00000041247", "ENSMUSG00000040483", "ENSMUSG00000026104", 
+"ENSMUSG00000056054", "ENSMUSG00000104876", "ENSMUSG00000056071", 
+"ENSMUSG00000037860", "ENSMUSG00000032344", "ENSMUSG00000018899", 
+"ENSMUSG00000042250", "ENSMUSG00000026154", "ENSMUSG00000000787", 
+"ENSMUSG00000044748", "ENSMUSG00000021703", "ENSMUSG00000040296", 
+"ENSMUSG00000043787", "ENSMUSG00000052554", "ENSMUSG00000049709", 
+"ENSMUSG00000024927", "ENSMUSG00000015619", "ENSMUSG00000024621", 
+"ENSMUSG00000095079", "ENSMUSG00000048500", "ENSMUSG00000021880", 
+"ENSMUSG00000058052", "ENSMUSG00000044222", "ENSMUSG00000042244", 
+"ENSMUSG00000076612", "ENSMUSG00000053797", "ENSMUSG00000043496", 
+"ENSMUSG00000040614", "ENSMUSG00000068008", "ENSMUSG00000027665", 
+"ENSMUSG00000069830", "ENSMUSG00000060508", "ENSMUSG00000076615", 
+"ENSMUSG00000104213", "ENSMUSG00000076617", "ENSMUSG00000070390", 
+"ENSMUSG00000058952", "ENSMUSG00000025779", "ENSMUSG00000067149", 
+"ENSMUSG00000029656", "ENSMUSG00000032109", "ENSMUSG00000015340", 
+"ENSMUSG00000036986", "ENSMUSG00000035031", "ENSMUSG00000001583", 
+"ENSMUSG00000028099", "ENSMUSG00000022514", "ENSMUSG00000006456", 
+"ENSMUSG00000030880", "ENSMUSG00000024659", "ENSMUSG00000061780", 
+"ENSMUSG00000042993", "ENSMUSG00000026835", "ENSMUSG00000047638", 
+"ENSMUSG00000075572", "ENSMUSG00000031311", "ENSMUSG00000041605", 
+"ENSMUSG00000015217", "ENSMUSG00000075571", "ENSMUSG00000073494", 
+"ENSMUSG00000076633", "ENSMUSG00000096464", "ENSMUSG00000013707", 
+"ENSMUSG00000053338", "ENSMUSG00000095612", "ENSMUSG00000027483", 
+"ENSMUSG00000055994", "ENSMUSG00000094164", "ENSMUSG00000046034", 
+"ENSMUSG00000094951", "ENSMUSG00000027485", "ENSMUSG00000026535", 
+"ENSMUSG00000095285", "ENSMUSG00000015947", "ENSMUSG00000005566", 
+"ENSMUSG00000019987", "ENSMUSG00000076490", "ENSMUSG00000020573", 
+"ENSMUSG00000073735", "ENSMUSG00000067773", "ENSMUSG00000096498", 
+"ENSMUSG00000095429", "ENSMUSG00000096670", "ENSMUSG00000095210", 
+"ENSMUSG00000035834", "ENSMUSG00000036712", "ENSMUSG00000005696", 
+"ENSMUSG00000026117", "ENSMUSG00000074896", "ENSMUSG00000020641", 
+"ENSMUSG00000075705", "ENSMUSG00000034459", "ENSMUSG00000016481", 
+"ENSMUSG00000001128", "ENSMUSG00000070034", "ENSMUSG00000076498", 
+"ENSMUSG00000033538", "ENSMUSG00000038058", "ENSMUSG00000027636", 
+"ENSMUSG00000028885", "ENSMUSG00000079164", "ENSMUSG00000103033", 
+"ENSMUSG00000095565", "ENSMUSG00000002602", "ENSMUSG00000071369", 
+"ENSMUSG00000026399", "ENSMUSG00000014453", "ENSMUSG00000032508", 
+"ENSMUSG00000026700", "ENSMUSG00000076646", "ENSMUSG00000096824", 
+"ENSMUSG00000094134", "ENSMUSG00000094194", "ENSMUSG00000095571", 
+"ENSMUSG00000096638", "ENSMUSG00000029771", "ENSMUSG00000076665", 
+"ENSMUSG00000076653", "ENSMUSG00000094509", "ENSMUSG00000076655", 
+"ENSMUSG00000093838", "ENSMUSG00000094533", "ENSMUSG00000020455", 
+"ENSMUSG00000022372", "ENSMUSG00000095583", "ENSMUSG00000096108", 
+"ENSMUSG00000095642", "ENSMUSG00000039853", "ENSMUSG00000076661", 
+"ENSMUSG00000096805", "ENSMUSG00000017830", "ENSMUSG00000035235", 
+"ENSMUSG00000031157", "ENSMUSG00000006519", "ENSMUSG00000094102", 
+"ENSMUSG00000096459", "ENSMUSG00000076652", "ENSMUSG00000024483", 
+"ENSMUSG00000076666", "ENSMUSG00000094029", "ENSMUSG00000029561", 
+"ENSMUSG00000076668", "ENSMUSG00000103939", "ENSMUSG00000052384", 
+"ENSMUSG00000033777", "ENSMUSG00000053158", "ENSMUSG00000047123", 
+"ENSMUSG00000076672", "ENSMUSG00000094322", "ENSMUSG00000009585", 
+"ENSMUSG00000076674", "ENSMUSG00000076671", "ENSMUSG00000055204", 
+"ENSMUSG00000050747", "ENSMUSG00000076676", "ENSMUSG00000076677", 
+"ENSMUSG00000041827", "ENSMUSG00000073400", "ENSMUSG00000044827", 
+"ENSMUSG00000094174", "ENSMUSG00000026405", "ENSMUSG00000060441", 
+"ENSMUSG00000051498", "ENSMUSG00000058063", "ENSMUSG00000034453", 
+"ENSMUSG00000037523", "ENSMUSG00000037440", "ENSMUSG00000026542", 
+"ENSMUSG00000028291", "ENSMUSG00000035279", "ENSMUSG00000066258", 
+"ENSMUSG00000000776", "ENSMUSG00000029915", "ENSMUSG00000033860", 
+"ENSMUSG00000026883", "ENSMUSG00000054717", "ENSMUSG00000028001", 
+"ENSMUSG00000033831", "ENSMUSG00000057143", "ENSMUSG00000028874", 
+"ENSMUSG00000066232", "ENSMUSG00000032584", "ENSMUSG00000052749", 
+"ENSMUSG00000078616", "ENSMUSG00000028820", "ENSMUSG00000031750", 
+"ENSMUSG00000000275", "ENSMUSG00000030921", "ENSMUSG00000057596", 
+"ENSMUSG00000021938", "ENSMUSG00000026928", "ENSMUSG00000037780", 
+"ENSMUSG00000022607", "ENSMUSG00000026822", "ENSMUSG00000026842", 
+"ENSMUSG00000021795", "ENSMUSG00000040522", "ENSMUSG00000030793", 
+"ENSMUSG00000096407", "ENSMUSG00000027995", "ENSMUSG00000076680", 
+"ENSMUSG00000087582", "ENSMUSG00000023224", "ENSMUSG00000044583", 
+"ENSMUSG00000027646", "ENSMUSG00000102301", "ENSMUSG00000105906", 
+"ENSMUSG00000095981", "ENSMUSG00000095442", "ENSMUSG00000026984", 
+"ENSMUSG00000106039", "ENSMUSG00000096499", "ENSMUSG00000095700", 
+"ENSMUSG00000095200", "ENSMUSG00000076937", "ENSMUSG00000074681", 
+"ENSMUSG00000053647", "ENSMUSG00000023973", "ENSMUSG00000076867", 
+"ENSMUSG00000049560", "ENSMUSG00000027468", "ENSMUSG00000074680", 
+"ENSMUSG00000074679", "ENSMUSG00000026983", "ENSMUSG00000044249", 
+"ENSMUSG00000076688", "ENSMUSG00000094694", "ENSMUSG00000056544", 
+"ENSMUSG00000027598", "ENSMUSG00000030413", "ENSMUSG00000028163", 
+"ENSMUSG00000050645", "ENSMUSG00000062124", "ENSMUSG00000070942", 
+"ENSMUSG00000044863", "ENSMUSG00000000266", "ENSMUSG00000074678", 
+"ENSMUSG00000102888", "ENSMUSG00000095416", "ENSMUSG00000103254", 
+"ENSMUSG00000095554", "ENSMUSG00000059923", "ENSMUSG00000076695", 
+"ENSMUSG00000096410", "ENSMUSG00000095761", "ENSMUSG00000024948", 
+"ENSMUSG00000026985", "ENSMUSG00000032462", "ENSMUSG00000028041", 
+"ENSMUSG00000094561", "ENSMUSG00000028191", "ENSMUSG00000103290", 
+"ENSMUSG00000094241", "ENSMUSG00000094546", "ENSMUSG00000022672", 
+"ENSMUSG00000059883", "ENSMUSG00000021678", "ENSMUSG00000034730", 
+"ENSMUSG00000039236", "ENSMUSG00000036905", "ENSMUSG00000036896", 
+"ENSMUSG00000036887", "ENSMUSG00000026471", "ENSMUSG00000025280", 
+"ENSMUSG00000045322", "ENSMUSG00000093896", "ENSMUSG00000026672", 
+"ENSMUSG00000096452", "ENSMUSG00000027832", "ENSMUSG00000096326", 
+"ENSMUSG00000033454", "ENSMUSG00000004837", "ENSMUSG00000016024", 
+"ENSMUSG00000028059", "ENSMUSG00000011008", "ENSMUSG00000094075", 
+"ENSMUSG00000020115", "ENSMUSG00000094689", "ENSMUSG00000026896", 
+"ENSMUSG00000096649", "ENSMUSG00000031377", "ENSMUSG00000095127", 
+"ENSMUSG00000093955", "ENSMUSG00000021423", "ENSMUSG00000074151", 
+"ENSMUSG00000096150", "ENSMUSG00000027427", "ENSMUSG00000094051", 
+"ENSMUSG00000095923", "ENSMUSG00000051969", "ENSMUSG00000021326", 
+"ENSMUSG00000032688", "ENSMUSG00000031077", "ENSMUSG00000095130", 
+"ENSMUSG00000094652", "ENSMUSG00000095859", "ENSMUSG00000031264", 
+"ENSMUSG00000042672", "ENSMUSG00000034422", "ENSMUSG00000076709", 
+"ENSMUSG00000096355", "ENSMUSG00000076710", "ENSMUSG00000020395", 
+"ENSMUSG00000102364", "ENSMUSG00000094198", "ENSMUSG00000024457", 
+"ENSMUSG00000025512", "ENSMUSG00000032312", "ENSMUSG00000058715", 
+"ENSMUSG00000095204", "ENSMUSG00000093894", "ENSMUSG00000094505", 
+"ENSMUSG00000078945", "ENSMUSG00000032691", "ENSMUSG00000015083", 
+"ENSMUSG00000094787", "ENSMUSG00000014599", "ENSMUSG00000021277", 
+"ENSMUSG00000095589", "ENSMUSG00000094862", "ENSMUSG00000031103", 
+"ENSMUSG00000049502", "ENSMUSG00000031392", "ENSMUSG00000078942", 
+"ENSMUSG00000022906", "ENSMUSG00000104452", "ENSMUSG00000095889", 
+"ENSMUSG00000039936", "ENSMUSG00000003283", "ENSMUSG00000095197", 
+"ENSMUSG00000021624", "ENSMUSG00000003184", "ENSMUSG00000094087", 
+"ENSMUSG00000102313", "ENSMUSG00000059128", "ENSMUSG00000002983", 
+"ENSMUSG00000060747", "ENSMUSG00000019843", "ENSMUSG00000096078", 
+"ENSMUSG00000096767", "ENSMUSG00000066551", "ENSMUSG00000062545", 
+"ENSMUSG00000095117", "ENSMUSG00000014932", "ENSMUSG00000096672", 
+"ENSMUSG00000094088", "ENSMUSG00000038517", "ENSMUSG00000030468", 
+"ENSMUSG00000095170", "ENSMUSG00000095519", "ENSMUSG00000026365", 
+"ENSMUSG00000029826", "ENSMUSG00000095863", "ENSMUSG00000094502", 
+"ENSMUSG00000076731", "ENSMUSG00000020399", "ENSMUSG00000073730", 
+"ENSMUSG00000051675", "ENSMUSG00000076733", "ENSMUSG00000024164", 
+"ENSMUSG00000094124", "ENSMUSG00000041000", "ENSMUSG00000048878", 
+"ENSMUSG00000037236", "ENSMUSG00000096020", "ENSMUSG00000017002", 
+"ENSMUSG00000057982", "ENSMUSG00000075370", "ENSMUSG00000037447", 
+"ENSMUSG00000025139", "ENSMUSG00000039005", "ENSMUSG00000021457", 
+"ENSMUSG00000073418", "ENSMUSG00000004709", "ENSMUSG00000001366", 
+"ENSMUSG00000004707", "ENSMUSG00000048806", "ENSMUSG00000049410", 
+"ENSMUSG00000096011", "ENSMUSG00000095270", "ENSMUSG00000095896", 
+"ENSMUSG00000073811", "ENSMUSG00000000409", "ENSMUSG00000017707", 
+"ENSMUSG00000038745", "ENSMUSG00000038357", "ENSMUSG00000063376", 
+"ENSMUSG00000078355", "ENSMUSG00000100079", "ENSMUSG00000042228", 
+"ENSMUSG00000094618", "ENSMUSG00000100505", "ENSMUSG00000094271", 
+"ENSMUSG00000096582", "ENSMUSG00000096591", "ENSMUSG00000047139", 
+"ENSMUSG00000037379", "ENSMUSG00000050199", "ENSMUSG00000096854", 
+"ENSMUSG00000099545", "ENSMUSG00000100234", "ENSMUSG00000101163", 
+"ENSMUSG00000031639", "ENSMUSG00000099518", "ENSMUSG00000099420", 
+"ENSMUSG00000095101", "ENSMUSG00000094648", "ENSMUSG00000070908", 
+"ENSMUSG00000100549", "ENSMUSG00000070904", "ENSMUSG00000032690", 
+"ENSMUSG00000002688", "ENSMUSG00000032661", "ENSMUSG00000015316", 
+"ENSMUSG00000026390", "ENSMUSG00000045364", "ENSMUSG00000009281", 
+"ENSMUSG00000030148", "ENSMUSG00000051682", "ENSMUSG00000052776", 
+"ENSMUSG00000015314", "ENSMUSG00000026938", "ENSMUSG00000050132", 
+"ENSMUSG00000038160", "ENSMUSG00000034317", "ENSMUSG00000023349", 
+"ENSMUSG00000029798", "ENSMUSG00000041135", "ENSMUSG00000046879", 
+"ENSMUSG00000038151", "ENSMUSG00000026874", "ENSMUSG00000030144", 
+"ENSMUSG00000030142", "ENSMUSG00000056130", "ENSMUSG00000023992", 
+"ENSMUSG00000044701", "ENSMUSG00000019779", "ENSMUSG00000033307", 
+"ENSMUSG00000059456", "ENSMUSG00000038527", "ENSMUSG00000025498", 
+"ENSMUSG00000055172", "ENSMUSG00000098470", "ENSMUSG00000079343", 
+"ENSMUSG00000038628", "ENSMUSG00000027514", "ENSMUSG00000022043", 
+"ENSMUSG00000025383", "ENSMUSG00000024371", "ENSMUSG00000090231", 
+"ENSMUSG00000025330", "ENSMUSG00000034889", "ENSMUSG00000028979", 
+"ENSMUSG00000030114", "ENSMUSG00000021125", "ENSMUSG00000038751", 
+"ENSMUSG00000079293", "ENSMUSG00000020707", "ENSMUSG00000054892", 
+"ENSMUSG00000030149", "ENSMUSG00000020823", "ENSMUSG00000025532", 
+"ENSMUSG00000032899", "ENSMUSG00000024349", "ENSMUSG00000032905", 
+"ENSMUSG00000090485", "ENSMUSG00000054072", "ENSMUSG00000022476", 
+"ENSMUSG00000024404", "ENSMUSG00000051439", "ENSMUSG00000096621", 
+"ENSMUSG00000024863", "ENSMUSG00000024045", "ENSMUSG00000026187", 
+"ENSMUSG00000025225", "ENSMUSG00000022887", "ENSMUSG00000025034", 
+"ENSMUSG00000056851", "ENSMUSG00000056612", "ENSMUSG00000022575", 
+"ENSMUSG00000000127", "ENSMUSG00000042351", "ENSMUSG00000039193", 
+"ENSMUSG00000106850")), .Names = c("mgi_symbol", "external_gene_name", 
+"ensembl_gene_id"), class = "data.frame", row.names = c(NA, -527L
+))
+```
+
+```{r}
+results_interferon_response_immune
+```
+
+## Run PCA and t-SNE for the young vs old SmartSeq2 data
+
+```{r}
+seurat_sms2 <- FindVariableGenes(object = seurat_sms2, mean.function = ExpMean, dispersion.function = LogVMR, 
+    y.cutoff = 0.75)
+```
+
+```{r}
+genes.var <- apply(X = seurat_sms2@raw.data , MARGIN = 1 , FUN = var)
+genes.var.top <- names( sort(genes.var , decreasing = TRUE)[1:2000] )
+
+seurat_sms2@var.genes <- genes.var.top
+```
+
+```{r}
+seurat_sms2@imputed <- as.data.frame.matrix(seurat_sms2@data)
+```
+
+
+```{r}
+seurat_sms2 <- RunPCA(object = seurat_sms2, pc.genes = seurat_sms2@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5 , use.imputed = TRUE )
+seurat_sms2 <- ProjectPCA(object = seurat_sms2 )
+seurat_sms2 <- JackStraw(object = seurat_sms2  )
+```
+
+```{r}
+PCElbowPlot(object = seurat_sms2)
+```
+
+```{r}
+seurat_sms2 <- SetAllIdent(object = seurat_sms2 , id = "type")
+```
+
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 2)
+```
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 3)
+```
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 2, dim.2 = 3)
+```
+
+
+```{r}
+seurat_sms2 <- RunTSNE(seurat_sms2, dims.use = c(1,2,3) , do.fast = T , seed.use = 1)
+```
+
+
+```{r}
+seurat_sms2 <- SetAllIdent(object = seurat_sms2 , id = "type")
+```
+
+```{r}
+TSNEPlot(object = seurat_sms2)
+```
+
+```{r}
+seurat_sms2 <- SetAllIdent(object = seurat_sms2 , id = "age")
+```
+
+```{r}
+TSNEPlot(object = seurat_sms2)
+```
+
+
+# PCA plot PC1 vs PC2 with color
+
+```{r}
+seurat_sms2@meta.data$type_long <- seurat_sms2@meta.data$type
+
+seurat_sms2@meta.data$type_long <- recode_factor( seurat_sms2@meta.data$type_long , q1 = "qNSC1", q2 = "qNSC2", a1 = "aNSC1" , a2 = "aNSC2" )
+```
+
+```{r}
+seurat_sms2 <- SetAllIdent(object = seurat_sms2 , id = "type_long")
+```
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 2 , cols.use = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1") , pt.shape = "age")
+```
+
+```{r}
+gg_pca <- PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 2 , cols.use = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1") , pt.shape = "age", do.return = TRUE)
+```
+
+
+```{r}
+gg_pca_2 <- ggplot(data = gg_pca$data , aes(x = x , y = y , color = ident , shape = pt.shape)) + geom_point() + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank() ) + scale_color_manual(values = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1") , limits = c("qNSC1","qNSC2","aNSC1","aNSC2") , "Activation state") + scale_shape_manual(values = c(old = 17 , young = 16) , "Age") + coord_equal() + xlab("PC1") + ylab("PC2")
+
+print(gg_pca_2)
+```
+```{r}
+sd <-  GetDimReduction(object = seurat_sms2 , reduction.type = "pca" , slot = "sdev") 
+pc_percentage_of_variance <- round( (sd^2/sum(sd^2))*100 , digits = 1 )
+
+gg_pca_hollowcircle <- ggplot(data = gg_pca$data , aes(x = x , y = y , color = ident , shape = pt.shape)) + geom_point() + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank() ) + scale_color_manual(values = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1") , limits = c("qNSC1","qNSC2","aNSC1","aNSC2") , "Activation state") + scale_shape_manual(values = c(old = 17 , young = 1) , "Age") + coord_equal() + xlab( paste("PC1 (",pc_percentage_of_variance[1],"%)") ) + ylab( paste("PC2 (",pc_percentage_of_variance[2],"%)" )) + coord_equal()
+
+print(gg_pca_hollowcircle)
+```
+
+
+
+```{r fig.width=6}
+
+gg_pca_3 <- ggplot(data = gg_pca$data , aes(x = x , y = y , fill = factor(ident, levels = c("qNSC1","qNSC2","aNSC1","aNSC2")) , shape = pt.shape) ) + geom_point(size = 2, color = "black" )  + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank() ) + scale_fill_manual(values = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1") , limits = c("qNSC1","qNSC2","aNSC1","aNSC2") , "Activation state") + scale_shape_manual(values = c(old = 24 , young = 21) , "Age") + coord_equal()  + xlab( paste("PC1 (",pc_percentage_of_variance[1],"%)") ) + ylab( paste("PC2 (",pc_percentage_of_variance[2],"%)" )) + guides(fill = guide_legend(override.aes=list(shape=21)))
+
+print(gg_pca_3)
+```
+
+```{r fig.width=6}
+gg_pca_age <- ggplot(data = gg_pca$data , aes(x = x , y = y , fill = pt.shape , shape = pt.shape) ) + geom_point(size = 2, color = "black" )  + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank() ) + scale_fill_manual(values = c( "old" =  "slateblue", "young" = "yellowgreen") , labels = c( "old" , "young" ) , name = "Age" ) + scale_shape_manual(values = c(old = 24 , young = 21) , "Age") + coord_equal()  + xlab( paste("PC1 (",pc_percentage_of_variance[1],"%)") ) + ylab( paste("PC2 (",pc_percentage_of_variance[2],"%)" )) + guides(fill = guide_legend(override.aes=list(shape=21)))
+
+print(gg_pca_age)
+```
+
+# Make PCA plots for each subpopulation
+
+```{r}
+age_colors <- c(young = "yellowgreen" , old = "slateblue")
+```
+
+
+```{r}
+PCAPlot_seurat <- function(object , dim1 = 1, dim2 = 2 , scale_pcs_by_sd = TRUE , pt.size = 2){
+
+  gg_pca <- PCAPlot(object = object , dim.1 = dim1, dim.2 = dim2 , cols.use = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1") , pt.shape = "age", do.return = TRUE )
+  
+  sd <- GetDimReduction(object = object , reduction.type = "pca" , slot = "sdev")
+  pov <- round( (sd^2/sum(sd^2))*100 , digits = 1 )
+    
+  if(scale_pcs_by_sd){
+    gg_pca$data$x <- gg_pca$data$x * sd[[dim1]]
+    gg_pca$data$y <- gg_pca$data$y * sd[[dim2]]
+  }
+  
+  xlimits <- NULL
+  ylimits <- NULL
+    
+  x_range <- range(gg_pca$data$x)
+  x_diff <- x_range[2]-x_range[1] 
+  
+  y_range  <- range(gg_pca$data$y)
+  y_diff <- y_range[2]-y_range[1] 
+
+  if(x_diff > y_diff){
+    
+    offset <- (( x_diff - y_diff ) / 2 )
+    
+    y_range[1] <- y_range[1] - offset
+    y_range[2] <- y_range[2] + offset
+
+    ylimits <- y_range
+        
+  }else if( y_diff > x_diff ){
+    
+    offset <- (( y_diff - x_diff ) / 2 )
+    
+    x_range[1] <- x_range[1] - offset
+    x_range[2] <- x_range[2] + offset
+  
+    xlimits <- x_range
+    
+  }
+  
+  gg <- ggplot(data = gg_pca$data , aes(x = x , y = y , fill = pt.shape , shape = pt.shape) ) + geom_point(size = pt.size, colour = "black") + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank() ) + scale_fill_manual(values = age_colors , limits = names(age_colors) , name = "Age") + scale_shape_manual(values = c(old = 24 , young = 21) , limits = names(age_colors) , name = "Age") + coord_equal()  + xlab(paste("PC",dim1," (",pov[dim1],"%)")) + ylab(paste("PC",dim2," (",pov[dim2], "%)")) + ggtitle(paste0(unique(gg_pca$data$ident)) ) + guides(color = "none")
+  
+  if(!is.null(xlimits)){gg <- gg + xlim( xlimits )}
+  if(!is.null(ylimits)){gg <- gg + ylim( ylimits )}
+  
+  gg
+}
+```
+
+
+```{r}
+TSNEPlot_Seurat <- function(x , title = ""){
+
+  xlimits <- NULL
+  ylimits <- NULL
+    
+  x_range <- range(x$tSNE_1)
+  x_diff <- x_range[2]-x_range[1] 
+  
+  y_range  <- range(x$tSNE_2)
+  y_diff <- y_range[2]-y_range[1] 
+
+  if(x_diff > y_diff){
+    
+    offset <- (( x_diff - y_diff ) / 2 )
+    
+    y_range[1] <- y_range[1] - offset
+    y_range[2] <- y_range[2] + offset
+
+    ylimits <- y_range
+        
+  }else if( y_diff > x_diff ){
+    
+    offset <- (( y_diff - x_diff ) / 2 )
+    
+    x_range[1] <- x_range[1] - offset
+    x_range[2] <- x_range[2] + offset
+  
+    xlimits <- x_range
+  }
+    
+  gg <- ggplot(data = x , mapping = aes(x = tSNE_1 , y = tSNE_2 , fill = age  , shape = age)) + geom_point(size = 2, colour = "black") + scale_fill_manual(values = c( "old" =  "slateblue", "young" = "yellowgreen") , labels = c( "old" , "young" ) , name = "Age" ) + labs( x = "tSNE 1" , y = "tSNE 2" ) + coord_equal() + guides(color = "none") + scale_shape_manual(values = c( "old" = 24 , "young" = 21) , labels = c( "old" , "young" ) , name = "Age") + ggtitle( title )
+  
+  if(!is.null(xlimits)){gg <- gg + xlim( xlimits )}
+  if(!is.null(ylimits)){gg <- gg + ylim( ylimits )}
+  
+  gg
+}
+```
+
+## qNSC1
+
+```{r}
+seurat_sms2_qNSC1 <- SubsetData(object = seurat_sms2 , ident.use = "qNSC1")
+seurat_sms2_qNSC1 <- FindVariableGenes(object = seurat_sms2_qNSC1 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_sms2_qNSC1 <- RunPCA(object = seurat_sms2_qNSC1 , do.print = FALSE )
+
+pca_q1 <- PCAPlot_seurat( object = seurat_sms2_qNSC1 , dim1 = 1, dim2 = 2 )
+
+pca_q1
+
+PCAPlot_seurat( object = seurat_sms2_qNSC1 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_qNSC1<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_sms2_qNSC1 , pc.use = x , num.genes = 50 )} ) )
+
+
+PCElbowPlot(object = seurat_sms2_qNSC1)
+
+seurat_sms2_qNSC1 <- RunTSNE(object = seurat_sms2_qNSC1 , dims.use = 1:4 , seed.use = 1 )
+
+TSNEPlot(object = seurat_sms2_qNSC1 ) 
+
+
+x <- FetchData( object =  seurat_sms2_qNSC1 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_qNSC1 <- TSNEPlot_Seurat(x = x , title = "qNSC1") 
+
+gg_tsne_qNSC1
+```
+
+## qNSC2
+
+```{r}
+seurat_sms2_qNSC2 <- SubsetData(object = seurat_sms2 , ident.use = "qNSC2")
+seurat_sms2_qNSC2 <- FindVariableGenes(object = seurat_sms2_qNSC2 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_sms2_qNSC2 <- RunPCA(object = seurat_sms2_qNSC2 , do.print = FALSE)
+
+pca_q2 <- PCAPlot_seurat( object = seurat_sms2_qNSC2 , dim1 = 1, dim2 = 2 )
+
+pca_q2
+
+PCAPlot_seurat( object = seurat_sms2_qNSC2 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_qNSC2<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_sms2_qNSC2 , pc.use = x , num.genes = 50 )} ) )
+
+
+
+PCElbowPlot(object = seurat_sms2_qNSC2)
+
+seurat_sms2_qNSC2 <- RunTSNE(object = seurat_sms2_qNSC2 , dims.use = 1:5 , seed.use = 1 , perplexity = 13 )
+
+TSNEPlot(object = seurat_sms2_qNSC2 ) 
+
+
+x <- FetchData( object =  seurat_sms2_qNSC2 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_qNSC2 <- TSNEPlot_Seurat(x = x , title = "qNSC2 (perplexity = 13)") 
+
+gg_tsne_qNSC2
+```
+
+## aNSC1
+
+```{r}
+seurat_sms2_aNSC1 <- SubsetData(object = seurat_sms2 , ident.use = "aNSC1")
+seurat_sms2_aNSC1 <- FindVariableGenes(object = seurat_sms2_aNSC1 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_sms2_aNSC1 <- RunPCA(object = seurat_sms2_aNSC1 , do.print = FALSE)
+
+pca_a1 <- PCAPlot_seurat( object = seurat_sms2_aNSC1 , dim1 = 1, dim2 = 2 )
+
+pca_a1
+
+PCAPlot_seurat( object = seurat_sms2_aNSC1 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_aNSC1<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_sms2_aNSC1 , pc.use = x , num.genes = 50 )} ) )
+
+
+PCElbowPlot(object = seurat_sms2_aNSC1)
+
+seurat_sms2_aNSC1 <- RunTSNE(object = seurat_sms2_aNSC1 , dims.use = 1:5 , seed.use = 1 , perplexity = 7 )
+
+TSNEPlot(object = seurat_sms2_aNSC1 ) 
+
+
+x <- FetchData( object =  seurat_sms2_aNSC1 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_aNSC1 <- TSNEPlot_Seurat(x = x , title = "aNSC1 (perplexity = 7)") 
+
+gg_tsne_aNSC1
+```
+
+## aNSC2
+
+```{r}
+seurat_sms2_aNSC2 <- SubsetData(object = seurat_sms2 , ident.use = "aNSC2")
+seurat_sms2_aNSC2 <- FindVariableGenes(object = seurat_sms2_aNSC2 , mean.function = ExpMean, dispersion.function = LogVMR)
+seurat_sms2_aNSC2 <- RunPCA(object = seurat_sms2_aNSC2 , do.print = FALSE)
+
+pca_a2 <- PCAPlot_seurat( object = seurat_sms2_aNSC2 , dim1 = 1, dim2 = 2 )
+
+pca_a2
+
+PCAPlot_seurat( object = seurat_sms2_aNSC2 , dim1 = 2, dim2 = 3 )
+
+PC_top50genes_aNSC2<- bind_cols( lapply( list(PC1 = 1, PC2 = 2 , PC3 = 3) ,  FUN=function(x){PCTopGenes(object = seurat_sms2_aNSC2 , pc.use = x , num.genes = 50 )} ) )
+
+
+PCElbowPlot(object = seurat_sms2_aNSC2)
+
+seurat_sms2_aNSC2 <- RunTSNE(object = seurat_sms2_aNSC2 , dims.use = 1:5 , seed.use = 1 , perplexity = 7 )
+
+TSNEPlot(object = seurat_sms2_aNSC2 ) 
+
+
+x <- FetchData( object =  seurat_sms2_aNSC2 , vars.all = c("tSNE_1","tSNE_2","age") )
+
+gg_tsne_aNSC2 <- TSNEPlot_Seurat(x = x , title = "aNSC2 (perplexity = 7)") 
+
+gg_tsne_aNSC2
+```
+
+```{r fig.width=10, fig.height=10}
+grid.arrange(pca_q1,pca_q2,pca_a1,pca_a2)
+```
+
+
+
+
+# t-SNE plots of subpopulations
+
+Gather all t-SNE plots
+
+```{r fig.height=10 , fig.width=10}
+grid.arrange( gg_tsne_qNSC1 , gg_tsne_qNSC2 , gg_tsne_aNSC1 , gg_tsne_aNSC2 )
+```
+
+```{r}
+saveRDS(object = seurat_sms2 , file = "seurat_sms2.RDS" )
+```
+
+# Find celltype markers
+
+```{r}
+seurat_sms2 <- SetAllIdent(object = seurat_sms2 , id = "type_long")
+
+celltype_markers <- FindAllMarkers(object = seurat_sms2 ,test.use = "t" , random.seed = 123 )
+```
+
+```{r}
+celltype_markers
+```
+
+# Save markers of individual celltypes
+
+```{r}
+celltypes <- c("qNSC1","qNSC2","aNSC1","aNSC2")
+
+for(i in celltypes){
+  write.csv(x = celltype_markers %>% filter(cluster == i) , file = file.path("celltype_markers/",paste0("celltype_markers_",i,"_SmartSeq2.csv")) )
+}
+```
+
+# GO analysis clusterCompare celltypes
+
+```{r}
+DE_results_list <- list()
+
+for(i in celltypes){
+  DE_results_list[[i]] <- celltype_markers %>% filter(cluster == i) 
+}
+```
+
+## GO term analysis function
+
+```{r fig.height=10, fig.width=20}
+GO_analysis <- function(DE_results_list , p_adj_cutoff = 0.05  ){
+  require("clusterProfiler")
+  
+  if( length(DE_results_list) < 1){
+    warning("No entries in DE_results_list")
+    invisible(DE_results_list)
+  }
+  
+  de_genes_list <-list(NULL)
+  for(i in seq_len(length(DE_results_list)) ){
+    de_genes <- DE_results_list[[i]] %>% filter( avg_logFC > 0 ) %>% dplyr::filter( p_val_adj < p_adj_cutoff ) %>% dplyr::pull(gene)
+    
+    de_genes_list[[ names(DE_results_list[i]) ]] <- bitr(geneID = de_genes , fromType = "ENSEMBL" , toType = "ENTREZID" , OrgDb = "org.Mm.eg.db" )[,"ENTREZID"]
+  }
+
+    # available ontologies are:
+    # BP - biological_process
+    # CC - cellular_component
+    # MF - molecular_function
+    go_results <- compareCluster(geneClusters = de_genes_list , fun = "enrichGO" , OrgDb = "org.Mm.eg.db" , ont = "BP", pvalueCutoff = 0.05 )
+      
+  return(go_results)
+}
+```
+
+```{r}
+smartseq2_compare_GO_results <- GO_analysis(DE_results_list = DE_results_list , p_adj_cutoff = 0.01)
+```
+
+```{r fig.width=15 , fig.asp=1}
+dotplot( smartseq2_compare_GO_results , showCategory = 10)
+```
+
+
+```{r}
+smartseq2_compare_GO_results.sim <- clusterProfiler::simplify(smartseq2_compare_GO_results) 
+```
+
+
+```{r fig.width=15 , fig.asp=1.5}
+gg2 <- clusterProfiler::dotplot(smartseq2_compare_GO_results , showCategory = 15)
+
+gg2$data$Description <- fct_relabel( .f = gg2$data$Description , .fun = function(x){str_wrap(string = x , width = 40)} )
+
+plotdata <- gg2$data %>% filter( p.adjust < 0.05)
+
+levels(plotdata$Cluster) <- sub( x = levels(plotdata$Cluster) , pattern = "DE_celltype_genes_", replacement = "")
+
+gg_clusterCompare <- ggplot(data = plotdata , mapping = aes( x = Cluster , y = Description , size = GeneRatio , color = -log10(p.adjust) ) ) + 
+  geom_point() + 
+  scale_color_gradient(low = "blue" , high = "red"  , breaks = c(1,10,20,30,40,50,60) , limits = c(1,60) ) + 
+  theme_bw() + 
+  theme( axis.text.x = element_text(colour="black",size=11), axis.text.y = element_text(colour="black",size=11, hjust = 1 ) )
+
+gg_clusterCompare
+```
+
+```{r fig.width=10 , fig.asp=1.5}
+gg_clusterCompare_center <- ggplot(data = plotdata , mapping = aes( x = Cluster , y = Description , size = GeneRatio , color = -log10(p.adjust) ) ) + 
+  geom_point() + 
+  scale_color_gradient(low = "blue" , high = "red"  , breaks = c(1,10,20,30,40,50,60) , limits = c(1,60) ) + 
+  theme_bw() + 
+  theme( axis.text.x = element_text(colour="black",size=11), axis.text.y = element_text(colour="black",size=8, hjust = 0.5 ) )
+
+gg_clusterCompare_center
+```
+
+# Heatmap of DNA damage response genes
+
+Load the list of DNA damage response genes.
+
+```{r}
+dna_damage_genes <- read.csv("gene_lists/DNA_damage_genes.csv", stringsAsFactors = FALSE )
+```
+
+Convert the Module column to factor.
+
+```{r}
+dna_damage_genes$module <- as.factor(dna_damage_genes$module)
+```
+
+
+```{r}
+dna_damage_genes
+```
+
+Get the TPM gene expression values for these genes from the TPM table
+
+```{r}
+TPM_dna_damage_genes <- TPM_NSCs %>% dplyr::filter( ensembl_gene_id %in% dna_damage_genes$ensembl_gene_id  )
+```
+
+Combine the two data.frames
+
+```{r}
+TPM_combined <- left_join(x = dna_damage_genes , y = TPM_dna_damage_genes , by = "ensembl_gene_id" )
+```
+
+```{r}
+head(TPM_combined)
+```
+
+```{r}
+cell_order <- pseudotime_ordering %>% mutate( typesort = as.character(fct_recode(.f = type , c = "a1" , d = "a2" , a = "q1" , b = "q2") ) ) %>% group_by(age) %>% arrange(age, typesort) %>% pull(cell) %>% as.character()
+```
+
+
+```{r fig.width=20}
+library(pheatmap)
+
+TPM_mat <- as.matrix(TPM_combined %>% dplyr::select( c( "ensembl_gene_id" , cell_order ) ) %>% column_to_rownames("ensembl_gene_id"))
+
+TPM_mat_names <- as.matrix(TPM_combined %>% dplyr::select( c( "gene_symbol" , cell_order ) ) %>% column_to_rownames("gene_symbol"))
+
+anno_row <- dplyr::select(dna_damage_genes , module , ensembl_gene_id ) %>% column_to_rownames("ensembl_gene_id")
+
+
+anno_col <- NSCs_annotation %>% dplyr::select(-cell)
+```
+
+##  Plot log transformed TPM values
+
+```{r}
+pheatmap(
+  mat = pmin( log( TPM_mat + 1 ) , 7 ) , 
+  cluster_rows = FALSE , 
+  cluster_cols = FALSE , 
+  scale = "none" , 
+  breaks = seq(0,7,length.out = 101) , 
+  color = viridisLite::viridis(n = 100) , 
+  border_color = NA , 
+  # gaps_row = row_breaks[seq_len(length.out = length(row_breaks) - 1 )] ,
+  annotation_col = anno_col , 
+  annotation_colors = list(
+      type = c(q1 = "steelblue" , q2 = "steelblue1" , a1 = "tomato" , a2 = "sienna1"), 
+      age = c( young = "yellowgreen" , old = "slateblue")
+    )
+)
+```
+
+Determine gaps between categories
+
+```{r}
+row_breaks <- cumsum( anno_row %>% group_by(module) %>% mutate( num = length(module)) %>% unique() %>% pull(num) ) 
+```
+
+Plot log transformed TPM values with gene names as rownames
+
+```{r fig.width = 10 , fig.height=15}
+anno_col_rename <- anno_col
+
+anno_col_rename$type <- as.character(anno_col_rename$type)
+
+anno_col_rename$type[anno_col_rename$type == "q1"] <- "qNSC1"
+anno_col_rename$type[anno_col_rename$type == "q2"] <- "qNSC2"
+anno_col_rename$type[anno_col_rename$type == "a1"] <- "aNSC1"
+anno_col_rename$type[anno_col_rename$type == "a2"] <- "aNSC2"
+
+anno_col_rename$type <- factor(x = anno_col_rename$type , levels = c("qNSC1","qNSC2","aNSC1","aNSC2") ) 
+```
+
+```{r fig.width = 10 , fig.height=15}
+scale_white_red <- colorRampPalette(colors = c("white","red"))
+
+pheatmap(
+  mat = pmin( log( TPM_mat_names + 1 ) , 8 ) , 
+  cluster_rows = FALSE , 
+  cluster_cols = FALSE , 
+  scale = "none" , 
+  breaks = seq(0,8,length.out = 101) , 
+  color = scale_white_red(n = 100) , 
+  annotation_col = anno_col_rename , 
+  annotation_colors = list(
+      type = c(qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1"), 
+      age = c( young = "yellowgreen" , old = "slateblue")
+    ),
+  gaps_col = 133,
+  show_colnames = FALSE, 
+  fontsize_row = 7
+)
+```
+
+
+# Differentially expressed genes between old and young
+
+## DESeq2
+
+```{r}
+library(DESeq2)
+library(tibble)
+library(BiocParallel)
+```
+
+
+Register number of cores for parallel execution
+```{r}
+register(BPPARAM =  MulticoreParam(workers = 4) , default = TRUE)
+```
+
+
+### Load the raw counts for all the cells
+```{r}
+countData <- read.csv(file = "count_table/raw_counts_NSCs_SMARTseq2.csv" , header = TRUE , row.names = 1)
+```
+
+
+And we load the cell annotation.
+```{r}
+colData <- NSCs_annotation
+
+colData$type_save <- colData$type
+
+levels(colData$type) <- c("aNSC1","aNSC2","qNSC1","qNSC2")
+```
+
+```{r}
+comparisons <- list( aNSC = c("aNSC1","aNSC2") , qNSC = c("qNSC1","qNSC2") , NSC = c("qNSC1","qNSC2","aNSC1","aNSC2") , qNSC1 = c("qNSC1") ,qNSC2 = c("qNSC2"), aNSC1 = c("aNSC1"), aNSC2 = c("aNSC2") )
+```
+
+
+Now we want to see if all our cells available in the colData are also found in the countData table?
+```{r}
+all(colData$cell %in% colnames(countData))
+```
+
+And if their order is the same?
+```{r}
+all(colData$cell == colnames(countData)[-1])
+```
+
+Great, thus we can proceed and set up our DESeq2 objects in a list.
+
+The comparisons we are interested in are:
+
+- aNSC:     old vs young
+- qNSC:     old vs young
+- all NSCs: old vs young
+- individual celltypes: old vs young
+
+Rename the gene column
+```{r}
+countData <- dplyr::rename( countData ,  gene = ensembl_gene_id )
+```
+
+### Subset the data from colData and countData according to the celltypes into a list
+```{r}
+celltype_data_list <- lapply(
+  
+  X =  comparisons , 
+  
+  FUN = function(x){
+    colD <- dplyr::filter( colData ,  type %in% x )
+    
+    cell_ids <- colD$cell
+    
+    countD <- dplyr::select( countData , one_of( "gene" , as.character(cell_ids)  ))
+    
+    list( colData = colD , countData = countD )
+  }
+)
+```
+
+
+#### Check the order of the celltypes in the list
+```{r}
+celltype_order <- lapply(
+  X = celltype_data_list , 
+  FUN = function(x){ as.character( unique( x$colData$type ) ) }
+)
+
+celltype_order
+```
+
+
+### Prepare DESeq objects
+Make a list of DESeqDataSets - one for each celltype
+Only keep expressed genes in the data sets
+Set "young" as base level for comparison: 
+  Thus a FC > 0 will mean it is higher in the old cells
+  
+Because we have expected reads from the RSEM output, we need to round the values to integer, as DESeq2 expects integer values
+
+```{r makeDESEq2object}
+celltype_data_list <- lapply(
+  
+  X = celltype_data_list , 
+  
+  FUN = function(x){
+    rownames(x$countData) <- NULL
+    rownames(x$colData) <- NULL
+    
+    dds <- DESeqDataSetFromMatrix(countData = round(column_to_rownames( df = x$countData , var = "gene")),
+                              colData = column_to_rownames( df = x$colData , var = "cell" ),
+                              design = ~ age )
+    
+    dds <- dds[ rowSums(counts(dds)) > 1, ]
+    dds$age <- relevel(x = dds$age , ref = "young")
+    
+    dds
+  }
+)
+```
+
+### Run DESeq
+Run DESeq on the list of dds objects - will be parallely run on the number of cores set in the start of this file by register() ...
+```{r runDESeq2}
+loopnum = 0
+
+celltype_data_list <- lapply(
+  
+  X = celltype_data_list , 
+  
+  FUN = function(dds){
+    
+    loopnum <<- loopnum + 1 
+    
+    print(paste("Running DESeq for field:", loopnum ) )
+    
+    DESeq(object = dds , parallel = TRUE )
+  
+  }
+)
+```
+
+
+### Extract the results from the DESeq2 data sets
+```{r extractResults}
+loopnum = 0
+
+results_list <- lapply(
+  
+  X = celltype_data_list , 
+  
+  FUN = function(dds){
+
+    loopnum <<- loopnum + 1 
+    
+    print(paste("Extract results for field:", loopnum ) )
+
+    DESeq2::results(object = dds , tidy = TRUE , parallel = TRUE )  
+  
+  }
+)
+```
+
+
+#### Save the DESeq2 data sets list and the results list as RDS files
+```{r}
+saveRDS(object = results_list , file = "results/DE_DESeq2_old_vs_young/results_list.RDS")
+saveRDS(object = celltype_data_list , file = "results/DE_DESeq2_old_vs_young/DESeq2_celltype_data_list.RDS")
+```
+
+
+#### Extract the individual DE tables from the list and save them individually as csv files
+```{r}
+write.csv( x = results_list[[1]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[1]] , ".csv" ) )
+write.csv( x = results_list[[2]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[2]] , ".csv"   ) )
+write.csv( x = results_list[[3]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[3]] , ".csv"   ) )
+write.csv( x = results_list[[4]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[4]] , ".csv"   ) )
+write.csv( x = results_list[[5]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[5]] , ".csv"   ) )
+write.csv( x = results_list[[6]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[6]] , ".csv"   ) )
+write.csv( x = results_list[[7]] , file = paste0("results/DE_DESeq2_old_vs_young/" , "DESeq2_result_" , names(comparisons)[[7]] , ".csv"   ) )
+```
+
+
+## t-Test
+
+### NSCs
+
+```{r}
+# Load the TPM expression values for the SMARTseq2 data
+TPM_NSC <- remove_rownames(df = TPM_NSCs) %>% column_to_rownames(var = "ensembl_gene_id" )
+
+# Load the cell annotation
+NSC_anno <- NSCs_annotation
+
+# Subset the expression matrix for young and old into different matrices
+TPM_old <- TPM_NSC[as.character(NSC_anno[NSC_anno$age == "old",]$cell)]
+TPM_young <- TPM_NSC[as.character(NSC_anno[NSC_anno$age == "young",]$cell)]
+
+# Log transform the expression values 
+TPM_old <- log(TPM_old+1)
+TPM_young <- log(TPM_young+1)
+
+TPM_NSC <- as.matrix( log(TPM_NSC+1) )
+
+# ------------------------------------------------------------------------------------------------------------
+
+# Calculate the mean expression, standard deviation and number of cells with 0 counts for each row (gene) for young and old cells separately
+
+table_sms2 <- data.frame( 
+  ensembl_gene_id = rownames(TPM_young),
+  avg_logTPM_young = apply(TPM_young , MARGIN = 1 , FUN = mean)  , 
+  avg_logTPM_old = apply(TPM_old , MARGIN = 1 , FUN = mean)  ,
+  avg_logTPM = apply(TPM_NSC , MARGIN = 1 , FUN = mean) ,
+  sd_logTPM_young = apply(TPM_young , MARGIN = 1 , FUN = sd)  ,
+  sd_logTPM_old = apply(TPM_old , MARGIN = 1 , FUN = sd),
+  fraction_cells_zero_young = apply(TPM_young == 0 , MARGIN = 1 , FUN = sum)/length(TPM_young),
+  fraction_cells_zero_old = apply(TPM_old == 0 , MARGIN = 1 , FUN = sum)/length(TPM_old)
+)
+
+# Calculate the difference between the mean from old and young (old - young)
+table_sms2$difference_of_avg <- (table_sms2$avg_logTPM_old - table_sms2$avg_logTPM_young )
+
+# Calculate the mean Standard Deviation between young and old
+table_sms2$mean_sd <- apply( X =  table_sms2[,c("sd_logTPM_young","sd_logTPM_old")] , MARGIN = 1 , FUN = mean)
+
+# Finally calculate Cohens D, by deviding the difference of the mean values by the mean standard deviation 
+table_sms2$'difference_of_avg/mean_sd'  <- table_sms2$difference_of_avg/table_sms2$mean_sd
+
+# ------------------------------------------------------------------------------------------------------------
+# Add p-values from t-test
+
+# Run t-test on SMARTseq2 NSC data old and young
+library(genefilter)
+
+# Prepare factor with young and old in order of the column names
+fact <- as.character( colnames(TPM_NSC) )
+fact[ grepl(x = fact , pattern = "s_dot") ] <- "old"
+fact[ grepl(x = fact , pattern = "^N" ) ] <- "young"
+fact <- factor( fact )
+
+
+# Prepare matrix for t-test input
+TPM_NSC_mat <- TPM_NSC
+TPM_NSC_mat <- as.matrix( TPM_NSC_mat ) 
+
+# Run t-test with rowttests function from genefilter packages
+t_test_NSCs_SMARTseq2 <- rowttests(x = TPM_NSC_mat , fac = fact )
+
+# Add ensembl_gene_id as column from the rownames
+t_test_NSCs_SMARTseq2$ensembl_gene_id <- rownames(t_test_NSCs_SMARTseq2) 
+
+# Join the tables
+table_sms2_merged_with_ttest <- full_join(x = table_sms2 , y = t_test_NSCs_SMARTseq2 , by = "ensembl_gene_id" )
+
+table_sms2_merged_with_ttest <- arrange(table_sms2_merged_with_ttest , desc(difference_of_avg/mean_sd))
+
+## Save the results as a csv file
+# write.csv(x = table_sms2_merged_with_ttest , file = "DE_results/DE_NSC_SmartSeq2/DE_NSCs_SmartSeq2_t-test_CohensD.csv" )
+```
+
+#### Expression of differentially expressed genes from Bulk NSCs
+
+```{r}
+# Load bulk NSCs DE genes between old and young animals
+bulk_DE_results <- read.csv("../Bulk_sequencing/DESeq2_results_old_vs_young/GP_DESeq2_results_Old_vs_Yang.csv" , row.names = 1)
+
+# Merge the table of calculated values with the DESeq2 output of the bulk NSC comparison old vs young by ensembl_gene_id
+tables_sms2_merged <- full_join(x = table_sms2 , y = bulk_DE_results)
+
+# ------------------------------------------------------------------------------------------------------------
+
+# Plot the difference in mean expression versus the parallel maximum of zero-count cell percentage
+tables_sms2_merged %>% 
+  filter(padj < 0.05) %>%
+  ggplot( aes(
+    x = pmax( fraction_cells_zero_old , fraction_cells_zero_young )  , 
+    y = avg_logTPM_old - avg_logTPM_young , 
+    color = factor(sign(log2FoldChange))
+    )) + geom_point()
+
+# Same plot with blue (up) and red (down) colored points and axes labels
+library(ggrepel)
+library(cowplot)
+
+as_tibble(tables_sms2_merged) %>%
+    filter( padj < 0.05) %>%
+    mutate( col = case_when(
+      padj > 0.05 ~ "n.s." , 
+      log2FoldChange > 0.3 ~ "up",
+      log2FoldChange < -0.3 ~ "down",
+      TRUE ~ "n.s." ) ) %>% 
+    ggplot( aes(
+      x = pmax( fraction_cells_zero_old , fraction_cells_zero_young )  , 
+      y = avg_logTPM_old - avg_logTPM_young , 
+      color = col 
+    )) + 
+    geom_point() +
+    geom_point(size = 1) +
+    geom_hline(yintercept = 0 , color = "grey40") +
+    xlab("Max. percentage of cells with no reads per gene in old or young") +
+    ylab("Difference of avg. log(TPM+1) \n between old and young") +
+    theme_cowplot() + theme(panel.grid.major = element_line(colour = "grey80")) +
+    scale_color_manual( name = "Direction of change in bulk" , values = c(down = "red" , up = "blue")) 
+    
+# --> exported to PDF 6x9 inches and 4x9 (wide)
+
+
+```
+
+
+### individual subpopulations
+
+```{r}
+# Load the TPM expression values for the SMARTseq2 data
+TPM_NSC <- remove_rownames(df = TPM_NSCs) %>% column_to_rownames( var = "ensembl_gene_id" )
+
+# Load the cell annotation
+NSC_anno <- NSCs_annotation 
+NSC_anno$type <- recode_factor( NSC_anno$type , q1 = "qNSC1", q2 = "qNSC2", a1 = "aNSC1" , a2 = "aNSC2" )
+
+# Subset the expression matrix for young and old into different matrices
+TPM_old <- TPM_NSC[as.character(NSC_anno[NSC_anno$age == "old",]$cell)]
+TPM_young <- TPM_NSC[as.character(NSC_anno[NSC_anno$age == "young",]$cell)]
+
+# Log transform the expression values 
+TPM_old <- log(TPM_old+1)
+TPM_young <- log(TPM_young+1)
+
+TPM_NSC <- as.matrix( log(TPM_NSC+1) )
+
+
+NSC_anno_young <- NSC_anno[NSC_anno$age == "young",]
+NSC_anno_old <- NSC_anno[NSC_anno$age == "old",]
+
+# ------------------------------------------------------------------------------------------------------------
+
+# Function that perform calculation of 
+run_ttest_and_calculate_Cohens_d <- function(subpop){
+
+    ## Subset cells for individual subpopulations
+    TPM_young_subpop <- TPM_young[as.character(NSC_anno_young[NSC_anno_young$type == subpop,]$cell)]
+    TPM_old_subpop <- TPM_old[as.character(NSC_anno_old[NSC_anno_old$type == subpop,]$cell)]
+    TPM_NSC_subpop <- TPM_NSC[,as.character(NSC_anno[NSC_anno$type == subpop,]$cell)]
+  
+    # Calculate the mean expression, standard deviation and number of cells with 0 counts for each row (gene) for young and old cells separately
+    table_sms2 <- data.frame( 
+      ensembl_gene_id = rownames(TPM_young_subpop),
+      avg_logTPM_young = apply(TPM_young_subpop , MARGIN = 1 , FUN = mean)  , 
+      avg_logTPM_old = apply(TPM_old_subpop , MARGIN = 1 , FUN = mean)  ,
+      sd_logTPM_young = apply(TPM_young_subpop , MARGIN = 1 , FUN = sd)  ,
+      sd_logTPM_old = apply(TPM_old_subpop , MARGIN = 1 , FUN = sd),
+      fraction_cells_zero_young = apply(TPM_young_subpop == 0 , MARGIN = 1 , FUN = sum)/length(TPM_young_subpop),
+      fraction_cells_zero_old = apply(TPM_old_subpop == 0 , MARGIN = 1 , FUN = sum)/length(TPM_old_subpop)
+    )
+    
+    # Calculate the difference between the mean from old and young (old - young)
+    table_sms2$difference_of_avg <- (table_sms2$avg_logTPM_old - table_sms2$avg_logTPM_young )
+    
+    # Calculate the mean Standard Deviation between young and old
+    table_sms2$mean_sd <- apply( X =  table_sms2[,c("sd_logTPM_young","sd_logTPM_old")] , MARGIN = 1 , FUN = mean)
+    
+    # Finally calculate Cohens D, by deviding the difference of the mean values by the mean standard deviation 
+    table_sms2$'difference_of_avg/mean_sd' <- table_sms2$difference_of_avg/table_sms2$mean_sd
+    
+    # ------------------------------------------------------------------------------------------------------------
+    # Add p-values from t-test
+    
+    # Run t-test on SMARTseq2 NSC data old and young
+    
+    # Prepare factor with young and old in order of the column names
+    fact <- as.character( colnames(TPM_NSC_subpop) )
+    fact[ grepl(x = fact , pattern = "s_dot") ] <- "old"
+    fact[ grepl(x = fact , pattern = "^N" ) ] <- "young"
+    fact <- factor( fact )
+    
+    # Prepare matrix for t-test input
+    TPM_NSC_mat <- TPM_NSC_subpop
+    TPM_NSC_mat <- as.matrix( TPM_NSC_mat ) 
+    
+    # Run t-test with rowttests function from genefilter packages
+    t_test_NSCs_SMARTseq2 <- rowttests(x = TPM_NSC_mat , fac = fact )
+    
+    # Add ensembl_gene_id as column from the rownames
+    t_test_NSCs_SMARTseq2$ensembl_gene_id <- rownames(t_test_NSCs_SMARTseq2) 
+    
+    # Join the tables
+    table_sms2_merged_with_ttest <- full_join(x = table_sms2 , y = t_test_NSCs_SMARTseq2 , by = "ensembl_gene_id" )
+
+    table_sms2_merged_with_ttest
+}
+
+# ------------------------------------------------------------------------------------------------------------
+
+# Run the t-test for all subpopulations individually
+
+subpopulations <- list(qNSC1 = "qNSC1", qNSC2 = "qNSC2", aNSC1 = "aNSC1", aNSC2 = "aNSC2")
+
+ttest_results_cohensd <- lapply(X = subpopulations , FUN = run_ttest_and_calculate_Cohens_d ) 
+
+# Order the table by cohens d
+ttest_results_cohensd <- lapply(ttest_results_cohensd, FUN = function(x){arrange(x, desc(difference_of_avg/mean_sd))} )
+
+## Save the results as a csv file
+# write.csv(x = ttest_results_cohensd[[1]] , file = paste0("DE_results/DE_NSC_SmartSeq2/subpopulations/DE_SmartSeq2_t-test_CohensD_",subpopulations[[1]],".csv") )
+
+# write.csv(x = ttest_results_cohensd[[2]] , file = paste0("DE_results/DE_NSC_SmartSeq2/subpopulations/DE_SmartSeq2_t-test_CohensD_",subpopulations[[2]],".csv") )
+
+# write.csv(x = ttest_results_cohensd[[3]] , file = paste0("DE_results/DE_NSC_SmartSeq2/subpopulations/DE_SmartSeq2_t-test_CohensD_",subpopulations[[3]],".csv") )
+
+# write.csv(x = ttest_results_cohensd[[4]] , file = paste0("DE_results/DE_NSC_SmartSeq2/subpopulations/DE_SmartSeq2_t-test_CohensD_",subpopulations[[4]],".csv") )
+```
+
+#### Difference of the mean Expression vs. Mean SD Plots
+
+##### qNSC1 vs. qNSC2 
+
+```{r}
+## t-test between qNSC1 and qNSC2 SMARTseq2
+## Subset cells for individual subpopulations
+TPM_NSC_qNSC1 <- TPM_NSC[,as.character(NSC_anno[NSC_anno$type == "qNSC1",]$cell)]
+TPM_NSC_qNSC2 <- TPM_NSC[,as.character(NSC_anno[NSC_anno$type == "qNSC2",]$cell)]
+
+TPM_NSC_aNSC1 <- TPM_NSC[,as.character(NSC_anno[NSC_anno$type == "aNSC1",]$cell)]
+TPM_NSC_aNSC2 <- TPM_NSC[,as.character(NSC_anno[NSC_anno$type == "aNSC2",]$cell)]
+
+
+TPM_NSC_qNSC1_qNSC2 <- as.matrix( cbind( TPM_NSC_qNSC1 , TPM_NSC_qNSC2 ) ) 
+
+q1q2 <- c( rep( "qNSC1" , 134 ) , rep( "qNSC2" , 40 ) )
+t_test_qNSC1_vs_2_SMARTseq2 <- rowttests(x = as.matrix( TPM_NSC_qNSC1_qNSC2 ) , fac = factor( q1q2 ) )
+
+tab <- data.frame(
+  ensembl_gene_id = rownames(TPM_NSC_qNSC1),
+  mean_qNSC1 = rowMeans( TPM_NSC_qNSC1 ) ,
+  mean_qNSC2 = rowMeans( TPM_NSC_qNSC2 ) , 
+  var_qNSC1 = apply(X = TPM_NSC_qNSC1 , MARGIN = 1 , FUN = var ),
+  var_qNSC2 = apply(X = TPM_NSC_qNSC2 , MARGIN = 1 , FUN = var ),
+  sd_qNSC1 = apply(X = TPM_NSC_qNSC1 , MARGIN = 1 , FUN = sd ),
+  sd_qNSC2 = apply(X = TPM_NSC_qNSC2 , MARGIN = 1 , FUN = sd )
+)
+
+tab$mean_var <- apply(X = tab[,c("var_qNSC1","var_qNSC2")] , MARGIN = 1 , FUN = mean )
+tab$mean_sd <- apply(X = tab[,c("sd_qNSC1","sd_qNSC2")] , MARGIN = 1 , FUN = mean )
+tab$difference_of_avg <- (tab$mean_qNSC1 - tab$mean_qNSC2 )
+tab$'difference_of_avg/mean_sd' <- tab$difference_of_avg/tab$mean_sd
+
+# Add ensembl_gene_id as column from the rownames
+t_test_qNSC1_vs_2_SMARTseq2$ensembl_gene_id <- rownames(t_test_qNSC1_vs_2_SMARTseq2) 
+
+# Join the tables
+t_test_qNSC1_vs_2_SMARTseq2_merged_with_ttest <- full_join(x = tab , y = t_test_qNSC1_vs_2_SMARTseq2 , by = "ensembl_gene_id" )
+
+
+library(cowplot)
+
+ggplot(data = t_test_qNSC1_vs_2_SMARTseq2_merged_with_ttest , aes(y = mean_sd , x = mean_qNSC1 - mean_qNSC2 , color = abs(difference_of_avg/mean_sd) > 0.8 )) + geom_point( alpha = 0.5 , size = 1    ) + ggtitle("Comparison: qNSC1 vs qNSC2") + xlim(c(-5,5)) + theme_cowplot() + theme(panel.grid.major = element_line(colour = "grey80")) + xlab("Difference of mean expressions") + ylab("Average SD")
+
+ggplot(data = tab , aes(y = mean_sd , x = mean_qNSC1 - mean_qNSC2 )) + geom_point( alpha = 0.1 , size = 1 ) + ggtitle("Comparison: qNSC1 vs qNSC2") + xlim(c(-5,5)) + theme_cowplot() + theme(panel.grid.major = element_line(colour = "grey80")) + xlab("Difference of mean expressions") + ylab("Average SD")
+
+```
+
+##### qNSC1: old vs. young
+
+```{r}
+tab_q1_old_young <- run_ttest_and_calculate_Cohens_d(subpop = "qNSC1" )
+
+ggplot(data = tab_q1_old_young , aes(y = mean_sd , x = difference_of_avg , color = abs(difference_of_avg/mean_sd) > 0.8  )) + geom_point( alpha = 0.5 , size = 1 ) + ggtitle("Comparison: qNSC1 - old vs young") + xlim(c(-5,5)) + theme_cowplot() + theme(panel.grid.major = element_line(colour = "grey80"))  + xlab("Difference of mean expressions") + ylab("Average SD") 
+
+ggplot(data = tab_q1_old_young , aes(y = mean_sd , x = difference_of_avg )) + geom_point( alpha = 0.1 , size = 1 ) + ggtitle("Comparison: qNSC1 - old vs young") + xlim(c(-5,5)) + theme_cowplot() + theme(panel.grid.major = element_line(colour = "grey80"))  + xlab("Difference of mean expressions") + ylab("Average SD") 
+```
+
+# Euclidean Distances (work on it)
+
+## Load the TPM values
+
+```{r}
+smartseq2_data <- read.csv(file = "count_table/TPM_NSC_and_Astro/old_young_combined/Gene_expression_matrix_TPM_all.csv" , row.names = 1)
+
+smartseq2_data <- smartseq2_data %>% remove_rownames() %>% column_to_rownames("gene_id")
+```
+
+Also we load the annotation
+
+```{r}
+smartseq2_annotation <- read.csv(file = "count_table/cell_annotation_NSC_Astro/old_young_combined/cell_annotation.csv" , row.names = 1)
+```
+
+Which celltypes do we have?
+
+```{r}
+celltypes <- unique(as.character(smartseq2_annotation$type))
+
+celltypes
+```
+
+## Create Seurat object
+```{r}
+seurat_sms2 <- CreateSeuratObject(raw.data = smartseq2_data , min.cells = 3, project = "young_vs_old_SmartSeq2")
+
+seurat_sms2 <- AddMetaData(object = seurat_sms2, metadata = smartseq2_annotation %>% remove_rownames() %>% column_to_rownames("cell") )
+
+seurat_sms2 <- NormalizeData(object = seurat_sms2, normalization.method = "LogNormalize" )
+
+seurat_sms2 <- ScaleData(object = seurat_sms2, vars.to.regress = c("nUMI", "nGene"))
+
+seurat_sms2 <- FindVariableGenes(object = seurat_sms2, mean.function = ExpMean, dispersion.function = LogVMR, y.cutoff = 0.75)
+```
+
+```{r}
+genes.var <- apply(X = seurat_sms2@raw.data , MARGIN = 1 , FUN = var)
+genes.var.top <- names( sort(genes.var , decreasing = TRUE)[1:2000] )
+
+seurat_sms2@var.genes <- genes.var.top
+```
+
+```{r}
+seurat_sms2@imputed <- as.data.frame.matrix(seurat_sms2@data)
+```
+
+
+```{r}
+seurat_sms2 <- RunPCA(object = seurat_sms2, pc.genes = seurat_sms2@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5 , use.imputed = TRUE )
+seurat_sms2 <- ProjectPCA(object = seurat_sms2 )
+seurat_sms2 <- JackStraw(object = seurat_sms2  )
+```
+
+```{r}
+PCElbowPlot(object = seurat_sms2)
+```
+
+```{r}
+seurat_sms2 <- SetAllIdent(object = seurat_sms2 , id = "type")
+```
+
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 2)
+```
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 3)
+```
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 2, dim.2 = 3)
+```
+
+```{r}
+PCAPlot(object = seurat_sms2 , dim.1 = 1, dim.2 = 4)
+```
+
+```{r}
+PCAPlot(object = SetAllIdent( seurat_sms2 , id = "age" ) , dim.1 = 1, dim.2 = 4)
+```
+
+
+Log transform the TPM values
+
+```{r}
+smartseq2_data <- log(1+smartseq2_data)
+```
+
+
+Make a matrix of the data
+
+```{r}
+data_matrix_celltypes <- lapply( X = celltypes, FUN = function(x){
+                        cells <- filter(smartseq2_annotation , type == x) %>% pull(cell) %>% as.character()
+                        # t(as.matrix(smartseq2_data[,cells]))
+                        
+                        FetchData(object = seurat_sms2 , vars.all = c("PC1","PC2","PC3","PC4","PC5") , cells.use = cells )
+                      })
+```
+
+Now we calculate the euclidean distance between all the cells from one celltype
+
+```{r}
+euc_dist_celltypes <- lapply( data_matrix_celltypes , FUN = function(x){as.matrix(dist(x = x, method = "euclidean" , upper = TRUE))} )
+```
+
+```{r fig.asp=0.9}
+pheatmap(
+  main = celltypes[[1]],
+  mat = euc_dist_celltypes[[1]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9}
+pheatmap(
+  main = celltypes[[2]],
+  mat = euc_dist_celltypes[[2]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9}
+pheatmap(
+  main = celltypes[[3]],
+  mat = euc_dist_celltypes[[3]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9, fig.width=30}
+pheatmap(
+  main = celltypes[[4]],
+  mat = euc_dist_celltypes[[4]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9, fig.width=10}
+pheatmap(
+  main = celltypes[[5]],
+  mat = euc_dist_celltypes[[5]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+## Compare all samples to each other
+
+```{r}
+rownames(smartseq2_annotation) <- NULL
+
+anno <- smartseq2_annotation %>% mutate(type = factor(type , levels = c("qNSC1","qNSC2","aNSC1","aNSC2","Astro"))) %>% arrange(age , type) %>% column_to_rownames( var = "cell")
+```
+
+```{r}
+dist_all_samples <- as.matrix(dist(x = t(as.matrix(smartseq2_data)[,rownames(anno)]), method = "euclidean" , upper = TRUE))
+```
+
+```{r fig.asp=0.9 , fig.width=20}
+pheatmap(
+  main = "Euclidean Distance between all samples",
+  mat = dist_all_samples,
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE,
+  annotation_row = anno,
+  annotation_col = anno,
+  annotation_colors = list( type = c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1", Astro = "grey") , age = c(young = "forestgreen" , old = "red")) ,
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+## Density of euclidean distances
+
+```{r}
+df.plot.list <- lapply( X = euc_dist_celltypes, FUN = function(x){
+                                            x %>% as.data.frame() %>% rownames_to_column("cell1") %>% gather(key = "cell2" , value = "euclidean_distance" , -cell1) %>% left_join( y = dplyr::rename(anno, age_cell1 = age) %>% rownames_to_column( var = "cell1") , by = "cell1" ) %>% left_join( y = dplyr::rename(anno, age_cell2 = age) %>% rownames_to_column( var = "cell2") , by = "cell2" ) %>% mutate(comparison = paste(age_cell1 , age_cell2 , sep = "_")) %>% dplyr::filter(comparison %in% c("old_old","young_old","young_young"))
+})
+```
+
+```{r}
+gg.list <- lapply( X = df.plot.list, FUN = function(x){
+                                            ggplot(data = x, mapping = aes(x = euclidean_distance , color = comparison , fill = comparison )) + geom_density( alpha = 0.3) + ggtitle( paste0(unique(as.character(x$type.x))) )
+})
+```
+
+### Astro
+
+```{r fig.width=5,fig.height=2}
+print(gg.list[[1]])
+```
+
+### aNSC1
+
+```{r fig.width=5,fig.height=2}
+print(gg.list[[2]])
+```
+
+### aNSC2
+
+```{r fig.width=5,fig.height=2}
+print(gg.list[[3]])
+```
+
+### qNSC1
+
+```{r fig.width=5,fig.height=2}
+print(gg.list[[4]])
+```
+
+### qNSC2
+
+```{r fig.width=5,fig.height=2}
+print(gg.list[[5]])
+```
+
+
+## Euclidean Distances between celltypes
+
+```{r}
+celltype_comparisons <- list(Astro_qNSC1 = c("Astro","qNSC1") , qNSC1_qNSC2 = c("qNSC1","qNSC2") , qNSC2_aNSC1 = c("qNSC2","aNSC1") , aNSC1_aNSC2 = c("aNSC1","aNSC2") , qNSC1_aNSC2 = c("qNSC1","aNSC2")  )
+
+celltype_comparisons
+```
+
+Make a matrix of the data
+
+```{r}
+data_matrix_lineage <- lapply( X = celltype_comparisons, FUN = function(x){
+                        cells <- filter(smartseq2_annotation , type %in% x) %>% pull(cell) %>% as.character()
+                        # t(as.matrix(smartseq2_data[,cells]))
+                        
+                        FetchData(object = seurat_sms2 , vars.all = c("PC1","PC2","PC3","PC4","PC5") , cells.use = cells )
+                      })
+```
+
+Now we calculate the euclidean distance between all the cells from the comparison
+
+```{r}
+euc_dist_lineage_all <- lapply( data_matrix_lineage , FUN = function(x){as.matrix(dist(x = x, method = "euclidean" , upper = TRUE))} )
+```
+
+```{r fig.asp=0.9, fig.width=10}
+pheatmap(
+  main = paste(celltype_comparisons[[1]], collapse = "_vs_"),
+  mat = euc_dist_lineage_all[[1]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9, fig.width=10}
+pheatmap(
+  main = paste(celltype_comparisons[[2]], collapse = "_vs_"),
+  mat = euc_dist_lineage_all[[2]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9, fig.width=10}
+pheatmap(
+  main = paste(celltype_comparisons[[3]], collapse = "_vs_"),
+  mat = euc_dist_lineage_all[[3]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9, fig.width=10}
+pheatmap(
+  main = paste(celltype_comparisons[[4]], collapse = "_vs_"),
+  mat = euc_dist_lineage_all[[4]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+```{r fig.asp=0.9, fig.width=10}
+pheatmap(
+  main = paste(celltype_comparisons[[5]], collapse = "_vs_"),
+  mat = euc_dist_lineage_all[[5]],
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE, 
+  show_rownames = TRUE , 
+  show_colnames = TRUE , 
+  display_numbers = FALSE , 
+  number_color = "black" , 
+  fontsize = 14
+)
+```
+
+### Density of euclidean distances
+
+```{r}
+df.plot.list_all <- lapply( X = euc_dist_lineage_all, FUN = function(x){
+                                            x %>% as.data.frame() %>% rownames_to_column("cell1") %>% gather(key = "cell2" , value = "euclidean_distance" , -cell1) %>% left_join( y = dplyr::rename(anno, type_cell1 = type) %>% rownames_to_column( var = "cell1") , by = "cell1" ) %>% left_join( y = dplyr::rename(anno, type_cell2 = type) %>% rownames_to_column( var = "cell2") , by = "cell2" ) %>% mutate(comparison = paste(type_cell1 , type_cell2 , sep = "_"))
+})
+```
+
+```{r}
+gg.list_all <- lapply( X = df.plot.list_all, FUN = function(x){
+                                            ggplot(data = x, mapping = aes(x = euclidean_distance , color = comparison)) + geom_density() + ggtitle( "" )
+})
+```
+
+```{r}
+print(gg.list_all[[1]])
+```
+
+```{r}
+print(gg.list_all[[2]])
+```
+
+```{r}
+print(gg.list_all[[3]])
+```
+
+```{r}
+print(gg.list_all[[4]])
+```
+
+```{r}
+print(gg.list_all[[5]])
+```
+
+
+## Euclidean distances young vs old
+
+```{r}
+q1_q2_euc_dist <- df.plot.list_all$qNSC1_qNSC2 %>% filter(comparison == "qNSC1_qNSC2")
+```
+
+
+```{r}
+df.plot.list_ref <- lapply( X = euc_dist_celltypes, FUN = function(x){
+                                            x  %>% as.data.frame() %>% rownames_to_column("cell1") %>% gather(key = "cell2" , value = "euclidean_distance" , -cell1) %>% left_join( y = dplyr::rename(anno, age_cell1 = age) %>% rownames_to_column( var = "cell1") , by = "cell1" ) %>% left_join( y = dplyr::rename(anno, age_cell2 = age) %>% rownames_to_column( var = "cell2") , by = "cell2" ) %>% mutate(comparison = paste(age_cell1 , age_cell2 , sep = "_")) %>% dplyr::mutate(type = as.character(type.x) ) %>% dplyr::select( cell1,cell2,euclidean_distance,comparison , type) %>% bind_rows(q1_q2_euc_dist %>% dplyr::mutate(type = as.character(type_cell1) ) %>% dplyr::select( cell1,cell2,euclidean_distance,comparison,type)) %>% dplyr::filter(comparison %in% c("old_old","young_old","young_young","qNSC1_qNSC2")) %>% mutate(comparison = factor(comparison , levels = c("old_old","young_old","young_young","qNSC1_qNSC2")))
+})
+```
+
+```{r}
+colors_comparisons <- c("old_old" = "slateblue" ,"young_old" = "deepskyblue4", "young_young" = "olivedrab" , "qNSC1_qNSC2" = "black")
+
+gg.list <- lapply( X = df.plot.list_ref, FUN = function(x){
+                                            ggplot(data = x, mapping = aes(x = euclidean_distance , color = comparison , fill = comparison )) + geom_density( alpha = 0.3) + ggtitle( paste0(unique(as.character(x$type))) ) + xlab("Euclidean Distance") + ylab("Density") + scale_fill_manual(values = colors_comparisons) + scale_color_manual( values = colors_comparisons  ) + labs(color="Comparison",fill="Comparison") + ggtitle( paste0(unique(as.character(x$type))) )
+})
+```
+
+### Astro
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[1]])
+```
+
+### aNSC1
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[2]])
+```
+
+### aNSC2
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[3]])
+```
+
+### qNSC1
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[4]])
+```
+
+### qNSC2
+
+```{r fig.width=6,fig.height=4}
+print(gg.list[[5]])
+```
+
+# qNSC1 and Astrocytes
+
+```{r}
+BoxPlotSmart <- function( x , anno , idents , genes , trans_log2 = TRUE , pt.alpha = 1 , facet_switch = FALSE ){
+  require(dplyr)
+  require(tidyr)
+  require(ggplot2)
+  require(ggbeeswarm)
+  require(cowplot)
+  require(hash)
+
+  ens2gene_hash <- hash( keys = genes , values = names(genes) )
+  
+  cells <- as.character( filter( anno , type %in% idents ) %>% pull("cell") )
+  
+  data_violin <- dplyr::select(x , one_of( c( "gene_id" , cells ) ) ) %>% filter( gene_id %in% genes )
+  
+  data_violin_gather <- gather( data = data_violin , key = "cell" , value = "TPM" , -gene_id   )
+  
+  if(trans_log2){ data_violin_gather$TPM <- log2( data_violin_gather$TPM + 1 ) }
+  
+  data_violin_gather_joined <- left_join(x = data_violin_gather , y = anno, by = "cell")
+  
+  print( data_violin_gather_joined  %>% group_by(gene_id,type) %>% summarise( percent = sum(TPM > 0)/length(TPM) ) , gene_id = gene_id )
+  
+  gene_ids <- hash::values(ens2gene_hash[genes])
+
+  gene_ids <- gene_ids[! is.na(gene_ids)]
+
+  genes_labeller_vec <- gene_ids
+
+  genes_labeller <- labeller(gene_id = genes_labeller_vec)
+  
+  data_violin_gather_joined <- dplyr::filter(data_violin_gather_joined , gene_id %in% names(genes_labeller_vec) )
+  
+  g <- ggplot(data = data_violin_gather_joined , mapping = aes(x = type , y = TPM , fill = type )) + 
+        geom_boxplot( outlier.shape = NA ) +    
+        geom_quasirandom(alpha = pt.alpha , color = "black" , size = 0.7 ) +
+        scale_x_discrete( name = "Identity") + 
+        scale_y_continuous(name = if(trans_log2){"log2( TPM + 1 )"}else{"TPM"}) + 
+        scale_fill_manual(name = "Identity" , values = c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , Astro = "grey50" ) ) +
+        if( all( c("old","young") %in% as.character(anno$age) ) ){
+          if(! facet_switch){
+            facet_grid(facets = gene_id~age , labeller = genes_labeller)
+          }else{
+            facet_grid(facets = age~gene_id , labeller = genes_labeller)    
+          }      
+        }else{
+          facet_wrap( facets = "gene_id" , ncol = 1 , labeller = genes_labeller  )
+        }
+    
+  
+  return(g)
+}
+```
+
+## Load the data
+
+Load the SmartSeq2 data for young and old separately
+
+```{r}
+smartseq_data_old <- read.csv(file = "count_table/TPM_NSC_and_Astro/old/Gene_expression_matrix_TPM_old.csv" , header = TRUE, row.names = 1)
+smartseq_data_young <- read.csv(file = "count_table/TPM_NSC_and_Astro/young/Gene_expression_matrix_TPM_young.csv" , header = TRUE, row.names = 1)
+```
+
+Join young and old
+
+```{r}
+# smartseq_data <- full_join(x = smartseq_data_old , y = smartseq_data_young)
+```
+
+
+and the cell annotation to celltypes
+
+```{r}
+smartseq_data_annotation_old <- read.csv(file = "count_table/cell_annotation_NSC_Astro/old/cell_annotation_old.csv" , header = TRUE, row.names = 1)
+smartseq_data_annotation_young <- read.csv(file = "count_table/cell_annotation_NSC_Astro/young/cell_annotation_young.csv" , header = TRUE, row.names = 1)
+```
+
+Join young and old
+
+```{r}
+# smartseq_data_annotation <- bind_rows( smartseq_data_annotation_old, smartseq_data_annotation_young )
+```
+
+## Boxplot Cd9
+
+```{r fig.width=4, fig.height=5}
+BoxPlotSmart(x = smartseq_data_old , anno = smartseq_data_annotation_old , idents = c("qNSC1","Astro") , genes = c(Cd9 = "ENSMUSG00000030342") )
+
+cd9plot_old <- BoxPlotSmart(x = smartseq_data_old , anno = smartseq_data_annotation_old , idents = c("qNSC1","Astro") , genes = c(Cd9 = "ENSMUSG00000030342") , pt.alpha = 1) + theme(legend.position = "none") 
+
+cd9plot_old
+```
+
+```{r fig.width=4, fig.height=5}
+cd9plot_young <- BoxPlotSmart(x = smartseq_data_young , anno = smartseq_data_annotation_young , idents = c("qNSC1","Astro") , genes = c(Cd9 = "ENSMUSG00000030342") , pt.alpha = 1) + theme(legend.position = "none") 
+
+cd9plot_young
+```
+
+## Heatmap differentially expressed genes
+
+Load the lists of differentially expressed genes between cortical Astrocytes and qNSC1s, for cells from old mice.
+
+```{r}
+# Old 
+DEgenes_old_tab <- read.csv(file = "results/q1_old_vs_q1_oldAstro_sig_results.csv")
+
+DEgenes_old_tab$gene_name <- str_to_title(DEgenes_old_tab$gene_name)
+
+ens2gene_old <- DEgenes_old_tab 
+
+DEgenes_old_up <- dplyr::filter(DEgenes_old_tab , log_fold_chang > 0 , ! is.na(gene_id))
+DEgenes_old_down <- dplyr::filter(DEgenes_old_tab , log_fold_chang < 0 , ! is.na(gene_id))
+
+seurat_10X2 <- readRDS(file = "../10X/seurat_10X2_clustered_min_1500_nGene.RDS")
+
+DEgenes_old_up_comp <- dplyr::filter(DEgenes_old_up , gene_name %in% rownames(seurat_10X2@data) ) 
+DEgenes_old_down_comp <- dplyr::filter(DEgenes_old_down , gene_name %in% rownames(seurat_10X2@data) ) 
+
+# DEgenes_old_up_comp <- dplyr::filter(DEgenes_old_up , gene_id %in% smartseq_data_old$gene_id ) 
+# DEgenes_old_down_comp <- dplyr::filter(DEgenes_old_down , gene_id %in% smartseq_data_old$gene_id )  
+
+# DEgenes_old <- c( as.character(DEgenes_old_up$gene_name) , as.character(DEgenes_old_down$gene_name) )  
+DEgenes_old_ens <- c( as.character(DEgenes_old_up$gene_id) , as.character(DEgenes_old_down$gene_id) )  
+
+anno_old <- read.csv(file = "count_table/cell_annotation_NSC_Astro/old/cell_annotation_old.csv")
+
+```
+
+### Filter the SMARTseq2 TPM values for the genes that are differentially expressed
+
+```{r}
+q1cells <- filter(anno_old, type == "qNSC1") 
+
+q2cells <- filter(anno_old, type == "qNSC2") 
+
+astro_cells <- filter(anno_old, type == "Astro") 
+
+up_gene_id <- as.character(DEgenes_old_up_comp$gene_id)
+down_gene_id <- as.character(DEgenes_old_down_comp$gene_id)
+
+up_gene_names <- as.character(DEgenes_old_up_comp$gene_name) 
+down_gene_names <- as.character(DEgenes_old_down_comp$gene_name)
+
+scale_red_white <- colorRampPalette(colors = c("red","white"))
+```
+
+Fetch the data from qNSC1, qNSC2 and Astrocytes for the genes
+
+```{r}
+df.heatmap.smart_up_comp <- smartseq_data_old %>% dplyr::select( one_of(c("gene_id",as.character(q2cells$cell),as.character(q1cells$cell),as.character(astro_cells$cell))) ) %>% dplyr::filter(gene_id %in% up_gene_id ) %>% arrange(gene_id)
+
+df.heatmap.smart_down_comp <- smartseq_data_old %>% dplyr::select( one_of(c("gene_id",as.character(q2cells$cell),as.character(q1cells$cell),as.character(astro_cells$cell)))  ) %>% dplyr::filter(gene_id %in% down_gene_id ) %>% arrange(gene_id)
+
+df.heatmap.smart_comp <- as.matrix( bind_rows( df.heatmap.smart_up_comp , df.heatmap.smart_down_comp ) %>% column_to_rownames("gene_id") )
+
+df.heatmap.smart_comp <- log( as.matrix(df.heatmap.smart_comp) + 1 )
+```
+
+```{r}
+anno_sms2 <- anno_old %>% dplyr::select(cell,type) %>% column_to_rownames("cell")
+```
+
+### Plot Heatmap
+
+```{r fig.height=15 , fig.width=6}
+hm_sms2_comp <- pheatmap(mat = pmax( pmin(df.heatmap.smart_comp,3) , -3 ) , cluster_rows = FALSE , cluster_cols = FALSE , color = rev(scale_red_white(200))  , breaks = seq(from=0,to=3,length.out = 200) , main = "log( TPM + 1 )" , show_colnames = FALSE , show_rownames = FALSE , gaps_row = 170 , gaps_col = c(17,113) , fontsize = 8 , annotation_col = anno_sms2 , annotation_colors = list( type = c(qNSC1="steelblue",qNSC2="steelblue1",Astro="grey"))  )
+```
+
+# SessionInfo
+
+
+```{r}
+sessionInfo()
+```
+

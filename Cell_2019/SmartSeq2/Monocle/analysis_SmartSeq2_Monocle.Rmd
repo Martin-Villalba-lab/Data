@@ -1,0 +1,197 @@
+---
+title: "Monocle analysis: Young and old neural stem cells sequenced with SmartSeq2 protocol"
+output: 
+  html_notebook: 
+    smart: no
+    df_print: paged
+---
+
+# Load the R packages needed for the analysis
+
+We need the Matrix package to use sparse matrices to save memory while computing. The ggplot2 package is used for plotting and the monocle package is doing the normalization and pseudotime calculation. 
+
+```{r}
+require(Matrix)
+require(tidyverse)
+require(ggplot2)
+require(gridExtra)
+require(tidyverse)
+require(clusterProfiler)
+require(monocle)
+```
+
+```{r}
+set.seed(123)
+```
+
+
+# Load data for young and old neural stem cells sequenced with the Smart-Seq2 protocol
+
+We load the counts and NSCs cell annotation (e.g activation state -> qNSC1,qNSC2,aNSC1,aNSC2, cell name and age of the animal) 
+
+```{r}
+NSCs_annotation <- read.csv(file = "../count_table/NSCs_annotation.csv" , row.names = 1)
+
+TPM_NSCs <- read.csv(file = "../count_table/TPM_NSCs.csv" , row.names = 1)
+```
+
+
+# Pseudotime assignment
+
+## Prepare the phenoData data.frame that is needed to generate a new CellDataSet object
+
+We already have the annotation data.frame and just make the rownames match the cell names.
+
+```{r}
+rownames(NSCs_annotation) <- NSCs_annotation$cell
+
+head(NSCs_annotation)
+```
+
+## Prepare the featureData data.frame containg information about the genes (features)
+
+```{r}
+ensembl_id_gene_symbols_df <- bitr(geneID = TPM_NSCs$ensembl_gene_id, fromType = "ENSEMBL", toType = "SYMBOL", drop = FALSE ,OrgDb = "org.Mm.eg.db")
+
+fd <- data.frame( ensembl_id = TPM_NSCs$ensembl_gene_id , row.names = TPM_NSCs$ensembl_gene_id )
+
+gene_symbols <- TPM_NSCs$ensembl_gene_id
+
+gene_symbols <- sapply(gene_symbols, FUN = function(x){
+  
+  idx <- which(ensembl_id_gene_symbols_df$ENSEMBL == x )
+  
+  if( length(idx) < 1 ){
+    symb <- x
+  }else{
+    symb <- ensembl_id_gene_symbols_df$SYMBOL[idx[1]]
+  }
+  
+  symb
+})
+
+fd$gene_short_name <- gene_symbols
+
+fd
+```
+
+## Prepare the count data by converting to a sparse Matrix
+
+```{r}
+count_data <- as.matrix(TPM_NSCs[,-1]) 
+
+rownames(count_data) <- TPM_NSCs$ensembl_gene_id
+
+count_data <- as( count_data , "sparseMatrix")
+```
+
+
+## Create a new CellDataSet object with the raw counts as a sparseMatrix
+
+Now we can assemble a CellDataSet from the prepared data.frames, which can then be used by the monocle functions.
+
+```{r message=FALSE, warning=FALSE}
+NSC_TPM <- newCellDataSet( count_data,
+                       phenoData = new("AnnotatedDataFrame", data = NSCs_annotation ),
+                       featureData = new("AnnotatedDataFrame", data = fd)
+                       )
+
+NSC_abs_matrix <- relative2abs(NSC_TPM,  t_estimate = estimate_t(exprs(NSC_TPM)))
+
+NSC_ <- newCellDataSet( NSC_abs_matrix,
+                       phenoData = new("AnnotatedDataFrame", data = NSCs_annotation ),
+                       featureData = new("AnnotatedDataFrame", data = fd),
+                       # lowerDetectionLimit = 0.5,
+                       expressionFamily = negbinomial.size() )
+```
+
+
+```{r}
+NSC_ <- estimateSizeFactors(NSC_)
+NSC_ <- estimateDispersions(NSC_)
+NSC_ <- detectGenes(NSC_, min_expr = 0.1)
+```
+
+```{r}
+disp_table <- dispersionTable(NSC_)
+ordering_genes <- subset(disp_table, mean_expression >= 0.5 & dispersion_empirical >= 3 * dispersion_fit)$gene_id
+```
+
+
+```{r}
+NSC_ <- setOrderingFilter(NSC_, ordering_genes)
+plot_ordering_genes(NSC_)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+NSC_ <- reduceDimension(NSC_, max_components=2)
+NSC_ <- orderCells(NSC_ , reverse = TRUE)
+```
+
+```{r}
+plot_cell_trajectory(NSC_, color_by = "Pseudotime")
+```
+
+```{r}
+plot_cell_trajectory(NSC_, color_by = "State")
+```
+
+
+```{r}
+plot_cell_trajectory(NSC_, color_by = "type")
+```
+
+Export pseudotime ordering for all cells
+
+```{r}
+pseudotime_ordering <- NSC_@phenoData@data
+
+pseudotime_ordering
+```
+
+```{r}
+ggplot(data = pseudotime_ordering , mapping = aes(x = Pseudotime , y = num_genes_expressed, color = type)) + geom_point() + ggtitle("Number of expressed genes along pseudotime - color by activation state") + theme_classic()
+```
+
+
+```{r}
+ggplot(data = pseudotime_ordering , mapping = aes(x = Pseudotime , y = num_genes_expressed, color = age)) + geom_point() + ggtitle("Number of expressed genes along pseudotime - color by age") + theme_classic()
+```
+
+```{r}
+ggplot(data = pseudotime_ordering , mapping = aes(x = Pseudotime , color = type , fill = type) ) + geom_density(alpha = 0.1) + theme_classic()
+```
+
+```{r fig.asp=0.3}
+gg_lineage_legend <- 
+  ggplot(data = data.frame(Pseudotime = seq(0, round(max(pseudotime_ordering$Pseudotime) , digits = 1) , by = 0.1) ) , aes(x = Pseudotime ) ) +   
+    geom_rect(aes(xmin = Pseudotime - 0.15 , xmax = Pseudotime + 0.15, ymin = 1, ymax = 2, fill = Pseudotime )) + 
+    scale_fill_gradientn(colours = c( "steelblue" , "steelblue1" , "tomato" , "sienna1") , values = scales::rescale(c(1,3,6.5,11.7)) ) +
+    xlab("Lineage progression") + ylab("density") + 
+    theme(legend.position = "none") + 
+    theme_classic() +
+    geom_vline(data = data.frame(interc = c(2,6,10) ) , mapping = aes(xintercept = interc) , linetype = 3, color = "grey20") +
+    geom_text(data = data.frame( x = c(1,4,8,11.2) , states = c("qNSC1", "qNSC2", "aNSC1", "aNSC2") ), inherit.aes = FALSE , mapping = aes(x = x , label = states) , y = 0.8) + ylim(0.7,2)
+
+gg_lineage_legend
+```
+
+
+```{r}
+ggplot(data = pseudotime_ordering , mapping = aes(x = Pseudotime , color = age , fill = age) ) + geom_density(alpha = 0.1) + theme_classic()
+```
+
+Save the monocle pseudotime results in a file
+
+```{r}
+saveRDS("NSC_Monocle_object_SMARTseq2.RDS" , object = NSC_ )
+write.csv(file = "pseudotime_ordering.csv" , x = pseudotime_ordering )
+```
+
+# SessionInfo
+
+```{r}
+sessionInfo()
+```
+

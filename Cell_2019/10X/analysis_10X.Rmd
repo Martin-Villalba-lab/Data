@@ -1,0 +1,740 @@
+---
+title: "Analysis of Neural Stem Cells from the subventricular zone sequenced by 10X Genomics 3' Chromium protocol"
+output: 
+  html_notebook: 
+    smart: no
+    toc: yes
+    toc_float: yes
+    df_print: paged
+---
+
+# Analysis
+
+## Preparations
+
+### Loading the neccessary packages
+
+```{r}
+library("tidyverse")
+library("Seurat")
+library("Matrix")
+
+library("stringr")
+library("knitr")
+library("kableExtra")
+
+library("pheatmap")
+library("RColorBrewer")
+
+library("clusterProfiler")
+library("ReactomePA")
+```
+
+
+```{r}
+save_csv <- TRUE
+```
+
+
+<style>
+  .border-right {
+    border-right: 1px solid grey;
+  }
+</style>
+
+
+### Setup vectors needed for the analysis: Genes which are markers for the cell types
+
+```{r}
+markers.biol.validated <- c("Thbs4","Cxcl14","Cd9","Nr2e1","Id2","Ascl1","Egfr","Dcx","Dlx1","Mki67","Sox2","S100b","Cd24a","Ift88","Foxj1","Pdgfrb","Pecam1","Slc1a3","Gfap","Nes","Cxcl10","Rpl32","Hes1","Hes5")
+
+markers.custom.order <- c("Sfrp5","Bmpr1a","Vcam1","Slc1a3","Id2","Hes1","Hes5","Egfr","Ascl1","Mki67","Rpl22","Cd9","Nr2e1","Sox2","S100b")
+```
+
+### Load a list of cell cycle specific genes (taken from: http://satijalab.org/seurat/cell_cycle_vignette.html)
+
+```{r}
+cc.genes <- readLines(con = "cell_cycle_genes/cell_cycle_vignette_files/regev_lab_cell_cycle_genes.txt")
+cc.genes <- str_to_title(cc.genes)
+
+# Separate markers of G2/M phase and markers of S phase
+s.genes <- cc.genes[1:43]
+g2m.genes <- cc.genes[44:97]
+```
+
+### Loading the data
+
+```{r}
+datadir <- "count_table/filtered_gene_bc_matrices_mex/mm10/"
+
+data_10X2 <- Read10X(data.dir = file.path( datadir) )
+```
+
+### Create a Seurat object with the 10X data
+
+```{r}
+seurat_10X2 <- CreateSeuratObject(raw.data = data_10X2, min.cells = 3, min.genes = 1500, project = "young_vs_old_10X2")
+```
+
+### Add Metadata and check QC values
+
+```{r}
+mito.genes <- grep(pattern = "^mt-", x = rownames(x = seurat_10X2@data), value = TRUE)
+
+percent.mito <- Matrix::colSums(seurat_10X2@raw.data[mito.genes, ])/Matrix::colSums(seurat_10X2@raw.data)
+
+seurat_10X2 <- AddMetaData(object = seurat_10X2, metadata = percent.mito, col.name = "percent.mito")
+
+VlnPlot(object = seurat_10X2, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3 )
+```
+
+### Annotate the cells with the age of the animals
+
+We can also annotate the age of the mouse from which the cells were prepared (young or old). We know that all cell barcodes ending in ...-1 are beloning to cells from old old mice, the cell barcodes ending in ...-2 are from young mice.
+
+```{r annotate_age ,cache=TRUE}
+age.cells <- data.frame( age = as.factor(rownames(seurat_10X2@meta.data)) ) 
+rownames(age.cells) <- rownames(seurat_10X2@meta.data) 
+
+age.cells$age <- stringr::str_replace(age.cells$age , pattern = "^\\w+-1$" , replacement = "old")
+age.cells$age <- stringr::str_replace(age.cells$age , pattern = "^\\w+-2$" , replacement = "young")
+
+age.cells$age_num <- age.cells$age
+age.cells$age_num <- stringr::str_replace(age.cells$age_num , pattern = "old" , replacement = "1")
+age.cells$age_num <- stringr::str_replace(age.cells$age_num , pattern = "young" , replacement = "2")
+age.cells$age_num <- as.numeric(age.cells$age_num)
+
+age.cells$age <- factor(age.cells$age)
+
+seurat_10X2 <- AddMetaData(seurat_10X2, age.cells , "age")
+```
+
+### Check scatterplots of nUMI, nGene and % of mitochondrial genes
+
+```{r}
+par(mfrow = c(1, 2))
+GenePlot(object = seurat_10X2, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = seurat_10X2, gene1 = "nUMI", gene2 = "nGene")
+```
+
+### Filter the cells which have too high mitochondrial content
+
+```{r}
+seurat_10X2 <- FilterCells(object = seurat_10X2, subset.names = c("nGene", "percent.mito"), 
+    low.thresholds = c(1500, -Inf), high.thresholds = c(4500, 0.10))
+```
+
+### Check scatterplots of nUMI, nGene and % of mitochondrial genes after filtering
+
+```{r}
+par(mfrow = c(1, 2))
+GenePlot(object = seurat_10X2, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = seurat_10X2, gene1 = "nUMI", gene2 = "nGene")
+```
+
+### Log Normalize the data
+
+```{r}
+seurat_10X2 <- NormalizeData(object = seurat_10X2, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+### Scale the data and regress out the influence of nUMI and percent.mito
+
+```{r results='hide'}
+seurat_10X2 <- ScaleData(object = seurat_10X2, vars.to.regress = c("nUMI", "percent.mito" , "nGene"))
+```
+
+### Regress out difference between S phase and G2/M Phase
+
+```{r}
+seurat_10X2 <- CellCycleScoring(object = seurat_10X2, s.genes = s.genes, g2m.genes = g2m.genes, set.ident = TRUE)
+```
+
+#### Meta data columns
+
+We can see that the columns S.Score, G2M.Score and Phase are now added to the meta data table
+
+```{r}
+head(seurat_10X2@meta.data)
+```
+
+```{r}
+seurat_10X2@meta.data$CC.Difference <- seurat_10X2@meta.data$S.Score - seurat_10X2@meta.data$G2M.Score
+seurat_10X2 <- ScaleData(object = seurat_10X2, vars.to.regress = "CC.Difference", display.progress = FALSE)
+```
+
+
+## Dimensional reduction and clustering
+
+### Find variable genes
+
+```{r}
+seurat_10X2 <- FindVariableGenes(object = seurat_10X2, mean.function = ExpMean, dispersion.function = LogVMR, 
+    x.low.cutoff = 0.0125, x.high.cutoff = 4, y.cutoff = 0.5)
+```
+
+Using these parameters we have identified 2236 genes as variable.
+
+
+### Run PCA
+
+Now we use the detected variable genes to peform PCA on the data
+
+```{r results='hide'}
+seurat_10X2 <- RunPCA(object = seurat_10X2, pc.genes = seurat_10X2@var.genes, do.print = TRUE, pcs.print = 1:5, genes.print = 5  , seed.use = 2 )
+seurat_10X2 <- ProjectPCA(object = seurat_10X2 )
+seurat_10X2 <- JackStraw(object = seurat_10X2  )
+```
+
+### Elbowplot PCA
+
+```{r}
+PCElbowPlot(object = seurat_10X2)
+```
+
+### PCA Plot
+
+```{r}
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 4)
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 4)
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 4)
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 4)
+
+```
+
+### Run t-SNE
+```{r results='hide', echo=FALSE  }
+seurat_10X2 <- RunTSNE(seurat_10X2, dims.use = 1:8, do.fast = T , seed.use = 1)
+
+TSNEPlot(object = seurat_10X2)
+```
+
+## Use graph-based clustering to cluster the cells in our dataset
+
+```{r results='hide'}
+seurat_10X2 <- FindClusters(seurat_10X2, reduction.type = "pca", dims.use = 1:8, save.SNN = T , force.recalc = TRUE)
+```
+
+### Plot t-SNE plot
+
+```{r}
+TSNEPlot(object = seurat_10X2)
+
+FeaturePlot(object = seurat_10X2 , features.plot = "age_num" , cols.use = c("red","forestgreen") , no.legend = FALSE ) 
+
+FeaturePlot(object = seurat_10X2 , features.plot = "nUMI" , cols.use = c("lightgrey","red") , no.legend = FALSE )
+
+FeaturePlot(object = seurat_10X2 , features.plot = "nGene" , cols.use = c("lightgrey","red") , no.legend = FALSE )
+
+```
+
+Let's look at the 
+
+```{r}
+markers.seurat_10X2 <- FindAllMarkers(seurat_10X2, print.bar = FALSE , only.pos = TRUE , return.thresh = 0.05)
+
+markers.seurat_10X2 %>% filter(cluster == 0)
+
+markers.seurat_10X2 %>% filter(cluster == 1)
+
+markers.seurat_10X2 %>% filter(cluster == 2)
+
+markers.seurat_10X2 %>% filter(cluster == 3)
+
+markers.seurat_10X2 %>% filter(cluster == 4)
+
+markers.seurat_10X2 %>% filter(cluster == 5)
+
+markers.seurat_10X2 %>% filter(cluster == 6)
+
+markers.seurat_10X2 %>% filter(cluster == 7)
+
+markers.seurat_10X2 %>% filter(cluster == 8)
+
+markers.seurat_10X2 %>% filter(cluster == 9)
+
+markers.seurat_10X2 %>% filter(cluster == 10)
+```
+
+### Differential gene expression between cluster 6 and 8
+
+```{r}
+markers_cluster_6_vs_8 <- FindMarkers(object = seurat_10X2 , ident.1 = 6 , ident.2 = 8 , only.pos = TRUE , print.bar = FALSE )
+
+markers_cluster_6_vs_8
+```
+
+Cluster 6 shows increased expression of Mapk-Pathway related genes, immediate-early genes and transcription factors, like: Jun, Fos, Atf3, Ier2 ... 
+
+```{r}
+markers_cluster_8_vs_6 <- FindMarkers(object = seurat_10X2 , ident.1 = 8  , ident.2 = 6 , only.pos = TRUE , print.bar = FALSE )
+
+markers_cluster_8_vs_6
+```
+
+
+### tSNE feature plots: marker genes
+
+```{r}
+TSNEPlot(object = seurat_10X2)
+## quiescent Markers
+FeaturePlot(object = seurat_10X2 , features.plot = "Thbs4" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Id2" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Cxcl14" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## Stem Cell markers
+FeaturePlot(object = seurat_10X2 , features.plot = "Slc1a3" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Nr2e1" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Hes1" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Hes5" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Nes" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+##
+FeaturePlot(object = seurat_10X2 , features.plot = "Cxcl10" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## Proliferation markers
+FeaturePlot(object = seurat_10X2 , features.plot = "Rpl22" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Rpl32" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Cd9" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## Astrocyte markers
+FeaturePlot(object = seurat_10X2 , features.plot = "S100b" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Gfap" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## Active NSC markers
+FeaturePlot(object = seurat_10X2 , features.plot = "Mki67" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Ascl1" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Egfr" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## TAPs
+FeaturePlot(object = seurat_10X2 , features.plot = "Vcam1" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Dlx1" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## Neuroblast marker
+FeaturePlot(object = seurat_10X2 , features.plot = "Dcx" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+##
+FeaturePlot(object = seurat_10X2 , features.plot = "Sfrp5" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+## Oligodenrocyte marker
+FeaturePlot(object = seurat_10X2 , features.plot = "Olig1" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Pdgfra" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+FeaturePlot(object = seurat_10X2 , features.plot = "Sox10" ,cols.use = c("lightblue","red") , no.legend = FALSE)
+```
+
+### Check tSNE Plot with markers found by Basak et al. (2018)
+
+```{r}  
+# Load the genes as vector
+markers <- c( "Agt","Slc6a9","Etnppl","Slc6a1","Sparc",
+                            "Slc1a3","Bcan","Tspan7","Htra1","Cldn10","Ptn","Acsl6","Fgfr3",
+                            "Sparcl1","Atp1a2","Gpr37l1","Gja1","Prnp","Acsl3","Aqp4","Apoe","Gm26917",       # markers for quiescent NSCs - Gm26917 = Rn45s
+                            "Cst3","Clu","Slc1a2","Prdx6","Mt1","Aldoc",                                    # shared between quiescent and primed NSCs - slc1a2 instead of scl1a2 (probably typo)
+                            "Thbs4","Ntrk2","Fxyd1","Gstm1","Igfbp5","S100a6","Itm2b","Sfrp1","Dkk3","C4b",
+                            "Acot1","Luc7l3","Ckb",
+                            "Cpe","Dbi",                                                                    # primed NSCs and early active NSCs
+                            "Miat","Lima1","Pabpc1","Ascl1","Rpl12","Mycn","Olig2",
+                            "Pcna","Hsp90aa1","Hnrnpab","Ran","Ppia",
+                            "Eef1a1","Ptma","Rpl41","Npm1", "Rpsa", "Fabp7", "Egfr",                        # active NSCs
+                            "Mki67","Dlx2","Dlx1","Cdca3","Dlx1as",
+                            "Nrep","Tubb2b","Dcx","Btg1","Nfib",
+                            "Gad1","Ndrg4","Snap25","Syt1","Rbfox3",
+                            "Tmsb10","Stmn2","Cd24a","Dlx6os1","Tubb5","Tubb3","Ccnd2","Hmgn2","H2afz","Sox11","Tuba1b","Tmsb4x","Stmn1","Tpt1","Rpl18a"
+                            )  
+
+```
+
+
+```{r}  
+interval <- c( seq( 1, length(markers) , by = round(length(markers)/4) ) , length(markers) )
+
+interval
+```
+
+#### a) Ascl6 - Clu
+
+```{r}  
+TSNEPlot(object = seurat_10X2)
+
+for(i in seq( interval[1] , interval[2] )){
+  FeaturePlot(object = seurat_10X2 , features.plot = markers[i] ,cols.use = c("lightblue","red") , no.legend = FALSE)
+}
+```
+
+#### b) Sfrp1 - Ascl1
+
+```{r}  
+TSNEPlot(object = seurat_10X2)
+
+for(i in seq( interval[2]+1 , interval[3] )){
+  FeaturePlot(object = seurat_10X2 , features.plot = markers[i] ,cols.use = c("lightblue","red") , no.legend = FALSE)
+}
+```
+
+#### c) Npm1 - Dcx
+
+```{r}  
+TSNEPlot(object = seurat_10X2)
+
+for(i in seq( interval[3]+1 , interval[4] )){
+  FeaturePlot(object = seurat_10X2 , features.plot = markers[i] ,cols.use = c("lightblue","red") , no.legend = FALSE)
+}
+```
+
+#### d) Tubb5 - Rpl18a
+
+```{r}  
+TSNEPlot(object = seurat_10X2)
+
+for(i in seq( interval[4]+1 , interval[5] )){
+  FeaturePlot(object = seurat_10X2 , features.plot = markers[i] ,cols.use = c("lightblue","red") , no.legend = FALSE)
+}
+```
+
+### Violin plots: marker genes
+
+```{r}
+## quiescent Markers
+VlnPlot(object = seurat_10X2 , features.plot = "Thbs4" )
+VlnPlot(object = seurat_10X2 , features.plot = "Id2" )
+## Stem Cell markers
+VlnPlot(object = seurat_10X2 , features.plot = "Slc1a3" )
+VlnPlot(object = seurat_10X2 , features.plot = "Nr2e1" )
+VlnPlot(object = seurat_10X2 , features.plot = "Hes1" )
+VlnPlot(object = seurat_10X2 , features.plot = "Hes5" )
+VlnPlot(object = seurat_10X2 , features.plot = "Nes" )
+##
+VlnPlot(object = seurat_10X2 , features.plot = "Cxcl10" )
+VlnPlot(object = seurat_10X2 , features.plot = "Cxcl14" )
+## Proliferation markers
+VlnPlot(object = seurat_10X2 , features.plot = "Rpl22" )
+VlnPlot(object = seurat_10X2 , features.plot = "Rpl32" )
+VlnPlot(object = seurat_10X2 , features.plot = "Cd9" )
+## Astrocyte markers
+VlnPlot(object = seurat_10X2 , features.plot = "S100b" )
+VlnPlot(object = seurat_10X2 , features.plot = "Gfap" )
+## Active NSC markers & TAPS
+VlnPlot(object = seurat_10X2 , features.plot = "Mki67" )
+VlnPlot(object = seurat_10X2 , features.plot = "Ascl1" )
+VlnPlot(object = seurat_10X2 , features.plot = "Egfr" )
+VlnPlot(object = seurat_10X2 , features.plot = "Vcam1" )
+VlnPlot(object = seurat_10X2 , features.plot = "Dlx1" )
+VlnPlot(object = seurat_10X2 , features.plot = "Dlx2" )
+VlnPlot(object = seurat_10X2 , features.plot = "Atp1a2" )
+## Neuroblast marker
+VlnPlot(object = seurat_10X2 , features.plot = "Dcx" )
+##
+VlnPlot(object = seurat_10X2 , features.plot = "Sfrp5" )
+## Oligodenrocyte marker
+VlnPlot(object = seurat_10X2 , features.plot = "Olig1" )
+VlnPlot(object = seurat_10X2 , features.plot = "Pdgfra" )
+VlnPlot(object = seurat_10X2 , features.plot = "Sox10" )
+```
+
+### Heatmap marker genes
+
+```{r fig.width=16 , fig.height=8}
+markers_plots <- c( "Thbs4" , "Id2" , "Slc1a3" , "Nr2e1" , "Hes1" , "Hes5" , "Nes" , "Cxcl10" , "Rpl22" , "Rpl32" , "Cd9" , "S100b" , "Gfap" , "Mki67" , "Ascl1" , "Egfr" , "Vcam1" , "Dlx1" , "Dcx" , "Sfrp5" , "Olig1" , "Pdgfra" , "Sox10" )
+
+DoHeatmap(object = seurat_10X2 , genes.use = markers_plots)
+```
+
+
+## Set identities from marker gene expression
+
+```{r}
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(0) ) , ident.use = "qNSC1"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(4) ) , ident.use = "qNSC2"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(6,8) ) , ident.use = "aNSC0"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(3,5) ) , ident.use = "aNSC1"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(1) ) , ident.use = "aNSC2"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(2) ) , ident.use = "TAP"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(7) ) , ident.use = "NB"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(10) ) , ident.use = "OPC"  )
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = WhichCells(object = seurat_10X2 , ident = c(9) ) , ident.use = "OD"  )
+
+```
+
+### Build Cluster Tree
+
+```{r}
+seurat_10X2 <- BuildClusterTree(object = seurat_10X2 , pcs.use = 1:8)
+```
+
+
+### PCA Plot with identities
+
+```{r}
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 4)
+PCAPlot(object = seurat_10X2 , dim.1 = 1, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 4)
+PCAPlot(object = seurat_10X2 , dim.1 = 2, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 4)
+PCAPlot(object = seurat_10X2 , dim.1 = 3, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 4, dim.2 = 5)
+
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 1)
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 2)
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 3)
+PCAPlot(object = seurat_10X2 , dim.1 = 5, dim.2 = 4)
+
+```
+
+### tSNE feature plots: marker genes
+
+```{r}
+
+TSNEPlot(object = seurat_10X2)
+TSNEPlot(object = seurat_10X2 , do.label = TRUE)
+```
+
+### Violin plots: marker genes
+
+```{r fig.width=6, fig.height=4}
+celltypes_order <- c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD")
+
+
+## quiescent Markers
+VlnPlot(object = seurat_10X2 , features.plot = "Thbs4" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Id2" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## Stem Cell markers
+VlnPlot(object = seurat_10X2 , features.plot = "Slc1a3" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Nr2e1" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Hes1" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Hes5" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Nes" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+##
+VlnPlot(object = seurat_10X2 , features.plot = "Cxcl10" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## Proliferation markers
+VlnPlot(object = seurat_10X2 , features.plot = "Rpl22" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Rpl32" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Cd9" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## Astrocyte markers
+VlnPlot(object = seurat_10X2 , features.plot = "S100b" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Gfap" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## Active NSC markers
+VlnPlot(object = seurat_10X2 , features.plot = "Ascl1" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Egfr" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## TAPs
+VlnPlot(object = seurat_10X2 , features.plot = "Vcam1" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Dlx1" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## Neuroblast marker
+VlnPlot(object = seurat_10X2 , features.plot = "Dcx" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+##
+VlnPlot(object = seurat_10X2 , features.plot = "Sfrp5" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+## Oligodenrocyte marker
+VlnPlot(object = seurat_10X2 , features.plot = "Olig1" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Pdgfra" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = "Sox10" ,  do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+```
+
+```{r}
+VlnPlot(object = seurat_10X2 , features.plot = c("nUMI")  , do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = c("nGene")  , do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+VlnPlot(object = seurat_10X2 , features.plot = c("percent.mito")  , do.return = TRUE) + scale_x_discrete( limits = celltypes_order )
+```
+
+
+### Heatmap marker genes
+
+```{r fig.height=12}
+markers_plots <- c( "Thbs4" , "Id2" , "Slc1a3" , "Nr2e1" , "Hes1" , "Hes5" , "Nes" , "Cxcl10" , "Rpl22" , "Rpl32" , "Cd9" , "S100b" , "Gfap" , "Mki67" , "Ascl1" , "Egfr" , "Vcam1" , "Dlx1" , "Dcx" , "Sfrp5" , "Olig1" , "Pdgfra" , "Sox10" )
+
+DoHeatmap(object = seurat_10X2 , genes.use = markers_plots , slim.col.label = TRUE , col.low = "blue" , col.mid = "white" , col.high = "red" , group.label.rot = TRUE  )
+```
+
+```{r fig.height=12}
+DoHeatmap(object = seurat_10X2 , genes.use = markers.custom.order , slim.col.label = TRUE , col.low = "blue" , col.mid = "white" , col.high = "red" , group.label.rot = TRUE )
+```
+
+```{r fig.height=12}
+DoHeatmap(object = seurat_10X2 , genes.use = markers , slim.col.label = TRUE , col.low = "blue" , col.mid = "white" , col.high = "red" , group.label.rot = TRUE  )
+```
+
+## Save identities to meta.data table
+
+```{r}
+seurat_10X2 <- StashIdent(object = seurat_10X2 , save.name = "celltype") 
+```
+
+
+## Find marker genes for the subpopulations and save them as csv files
+
+```{r}
+markers.seurat_10X2 <- FindAllMarkers(seurat_10X2)
+
+# Split the table into one table for each cluster
+markers_clusters <- list()
+
+## Save up and down regulated genes per cluster
+for( cl in unique(markers.seurat_10X2$cluster) ){
+  markers_clusters[[cl]] <- list()
+  markers_clusters[[cl]][["up"]] <- filter(markers.seurat_10X2 , cluster == cl & avg_logFC > 0 )
+  markers_clusters[[cl]][["down"]] <- filter(markers.seurat_10X2 , cluster == cl & avg_logFC < 0 )
+}
+
+for( cl in unique(markers.seurat_10X2$cluster) ){
+  for(j in c("up","down"))
+  if(save_csv){ write.csv(x = markers_clusters[[cl]][[j]] , file = paste0("celltype_markers/celltype_" , cl , "_", j , "regulated" , "_markers_10X2_young_old.csv" )) }
+}
+```
+
+## t-SNE plots with cluster identity or with age 
+
+Color the tSNE plot by the age of the animals
+
+```{r}
+x <- FeaturePlot(object = seurat_10X2 , features.plot = "age_num" , cols.use = c("slateblue","yellowgreen") , no.legend = FALSE , do.return = TRUE )
+
+tsne_ageplot <- ggplot(data = x$age_num$data , mapping = aes(x = x , y = y , color = col)) + geom_point(size = 1) + scale_color_manual(values = c("slateblue","yellowgreen") , labels = c( "old" , "young" ) , name = "age of animal" ) + labs( x = "tSNE_1" , y = "tSNE_2" ) + coord_equal()
+
+plotsize = 5
+
+tsne_ageplot
+#ggsave(plot = tsne_ageplot , filename = "age_tsne_hires.png" , width = plotsize , height = plotsize )
+```
+
+```{r fig.asp=1}
+ggplot(data = x$age_num$data , mapping = aes(x = x , y = y , color = col)) + geom_point(size = 1) + scale_color_manual(values = c("slateblue","yellowgreen") , labels = c( "old" , "young" ) , name = "age of animal" ) + labs( x = "tSNE_1" , y = "tSNE_2" ) + coord_equal() # + guides(color = "none")
+```
+
+Color the tSNE by the identified celltypes and subpopulations
+
+```{r}
+g <- TSNEPlot(seurat_10X2 , do.return = TRUE)
+
+ggplot(data = g$data , mapping = aes(x = x , y = y , color = ident)) + 
+  geom_point(size = 1) + 
+  labs( x = "tSNE_1" , y = "tSNE_2" ) + 
+  coord_equal() + 
+  scale_color_manual(values =   c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow" , OPC = "pink" , OD = "violet") , name = "Type" )
+```
+
+```{r fig.asp=1}
+ggplot(data = g$data , mapping = aes(x = x , y = y , color = ident)) + 
+  geom_point(size = 1) + 
+  labs( x = "tSNE_1" , y = "tSNE_2" ) + 
+  coord_equal() + 
+  # guides(color = "none") + 
+  scale_color_manual(values =   c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow" , OPC = "pink" , OD = "violet") , name = "Type" )
+
+```
+
+
+## Save the analysis results so far as RDS file
+```{r}
+# saveRDS(object = seurat_10X2 , file = "seurat_10X2_clustered_min_1500_nGene_all_cells.RDS")
+```
+
+## Identify and filter out contaminating ependymal cells and leukocytes
+
+We find that there are two small clusters in the tSNE plot that lie outside the qNSC2 and the aNSC0. Using the interactive visualisation feature we can determine the names of these cells and check for differentially expressed genes from those.
+
+```{r}
+outside_q2 <- c("GCGAGAATCGCTTAGA-1", "GTTAAGCGTGCACTTA-1", "TCATTTGTCGTCCAGG-1", 
+"AACGTTGCACGCCAGT-2", "CAACTAGAGTCGCCGT-2", "CCACTACTCGGAATCT-2", 
+"CCGTTCATCCTGCTTG-2", "CGCTGGAGTAGTACCT-2", "TACTTACTCCTAGGGC-2", 
+"TAGTTGGCACATTAGC-2", "TGGCTGGCACTCAGGC-2", "TGTATTCCATGTTGAC-2"
+)
+
+outside_a0 <- c("ATGGGAGAGATCCGAG-1", "TACACGACAAAGTGCG-1", "CCATGTCTCCTAGGGC-2", 
+"CGTGAGCCACCATGTA-2", "CTCGAAAAGTGCGATG-2", "TGACGGCCATCGATGT-2"
+)
+```
+
+```{r}
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = outside_a0 , ident.use = "outside_a0")
+seurat_10X2 <- SetIdent(object = seurat_10X2 , cells.use = outside_q2 , ident.use = "outside_q2")
+```
+
+```{r}
+TSNEPlot(object = seurat_10X2 , do.label = TRUE)
+```
+
+First the cells outside aNSC0
+
+```{r}
+outside_a0_markers <- FindMarkers(object = seurat_10X2 , ident.1 = "outside_a0")
+
+outside_a0_markers
+```
+
+Checking the differentially expressed genes we can see many leukocyte marker genes, amongst them CD45.
+
+```{r fig.width=15, fig.height=6}
+## Ptprc = CD45 -> Leukocyte Common Antigen (LCA)
+
+VlnPlot(object = seurat_10X2 ,  features.plot = c("Ptprc","Slc1a3") , x.lab.rot = TRUE )
+```
+
+
+Next the cells outside qNSC2
+
+```{r}
+outside_q2_markers <- FindMarkers(object = seurat_10X2 , ident.1 = "outside_q2")
+
+outside_q2_markers
+```
+
+Checking the differentially expressed genes we can see ependymal cell genes (Genes from https://pdfs.semanticscholar.org/e833/5f8154f714088147d76701ee0052d3a388b5.pdf)
+
+```{r fig.height=10, fig.width=20}
+VlnPlot(object = seurat_10X2 ,  features.plot = c("Iqca","Bbox1","Apoe","Syne1","Meig1","Foxj1","Slc1a3") , x.lab.rot = TRUE )
+```
+
+Next we exclude these contaminating cells and save the new seurat objects as a RDS file.
+
+```{r}
+cells_to_remove <- WhichCells(object = seurat_10X2 , ident = c("outside_q2","outside_a0"))
+
+cells_to_remove
+```
+
+After we made sure we know which kind of celltype these cells are, we can get rid of them in the following analysis
+
+```{r}
+all_cells <- WhichCells(object = seurat_10X2 )
+
+cells_to_keep <- all_cells[! all_cells %in% cells_to_remove]
+
+seurat_10X2 <- SubsetData(object = seurat_10X2 , cells.use = cells_to_keep )
+
+TSNEPlot(object = seurat_10X2 , do.label = TRUE)
+```
+
+## Save the results as an RDS file
+
+```{r}
+# saveRDS(object = seurat_10X2 , file = "seurat_10X2_clustered_min_1500_nGene.RDS")
+```
+
+
+
+SessionInfo
+
+```{r}
+sessionInfo()
+```

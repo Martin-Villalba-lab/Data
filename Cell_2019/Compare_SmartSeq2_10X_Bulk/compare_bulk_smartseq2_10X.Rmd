@@ -1,0 +1,1681 @@
+---
+title: "Comparison of bulk sequencing, SMARTseq2 data and 10X single cell data"
+output: 
+  html_notebook: 
+    toc: yes
+    toc_float: true
+    toc_collapsed: true
+  toc_depth: 3
+---
+
+# Load the packages used
+
+```{r}
+library("tidyr")
+library("stringr")
+library("tibble")
+library("pheatmap")
+library("Seurat")
+library("ggrepel")
+library("dplyr")
+library("forcats")
+```
+
+# Load all the data
+
+We have three different sequencing experiments and want to cross compare between
+
+- Bulk sequencing of NSCs, Neuroblasts, Microglia and Endothelial Cells
+- Single Cell RNA sequencing of Neural Stem cells with
+  - SMARTseq2 protocol: qNSC1 - aNSC2
+  - 10X protocol: qNSC1 - NB + OPC & OD
+
+
+Define colors for young and old throughout the analysis
+
+```{r}
+age_colors <- c(young = "yellowgreen" , old = "slateblue")
+age_colors_bulk <- c(young = "yellowgreen" , old = "slateblue" , Mo7 = "slateblue1")
+```
+
+
+## Load the bulk sequencing TPM values
+
+```{r}
+bulk_data <- read.csv(file = "../Bulk_sequencing/count_table/Gene_expression_matrix_population.csv" , row.names = 1)
+
+bulk_data <- as.matrix(bulk_data)
+```
+
+Log2 the TPM values
+
+```{r}
+bulk_data <- log2(bulk_data+1)
+```
+
+
+Also we load the annotation
+
+```{r}
+bulk_annotation <- read.csv(file = "../Bulk_sequencing/annotation/annotation_bulk.csv" , row.names = 1)
+```
+
+```{r}
+bulk_annotation$type <- factor(x = bulk_annotation$type , levels = c("NSC","Neuroblast","Microglia","Endothelial"))
+bulk_annotation$age <- factor(x = bulk_annotation$age , levels = c("young","Mo7","old"))
+```
+
+
+Which celltypes do we have?
+
+```{r}
+bulk_celltypes <- unique(as.character(bulk_annotation$type))
+
+bulk_celltypes
+```
+
+
+
+## Load the SMARTseq2 sequencing TPM values
+
+```{r}
+smartseq2_data <- read.csv(file = "../SmartSeq2/count_table/TPM_NSCs.csv") %>% dplyr::select(-X) %>% column_to_rownames(var = "ensembl_gene_id")
+
+smartseq2_data <- as.matrix(smartseq2_data)
+```
+
+Log2 the TPM values
+
+```{r}
+smartseq2_data <- log2(smartseq2_data+1)
+```
+
+
+Also we load the annotation
+
+```{r}
+smartseq2_annotation <- read.csv(file = "../SmartSeq2/count_table/NSCs_annotation.csv" , row.names = 1)
+```
+
+```{r}
+smartseq2_annotation$type <- fct_recode(.f = smartseq2_annotation$type , qNSC1 = "q1"  , qNSC2 = "q2" , aNSC1 = "a1" , aNSC2 = "a2")
+smartseq2_annotation$type <- factor(x = smartseq2_annotation$type , levels = c("qNSC1","qNSC2","aNSC1","aNSC2"))
+smartseq2_annotation$age <- factor(x = smartseq2_annotation$age , levels = c("young","old"))
+```
+
+Which celltypes do we have?
+
+```{r}
+smartseq2_celltype_colors <- c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC1 = "tomato" , aNSC2 = "sienna1")
+```
+
+## Load the 10X sequencing normalized values
+
+```{r}
+seurat_10X2 <- readRDS(file = "../10X/seurat_10X2_clustered_min_1500_nGene.RDS" )
+```
+
+We can extract the normalized expression from the object
+
+```{r}
+tenx_data <- expm1( seurat_10X2@data )
+
+tenx_data <- as.matrix(tenx_data)
+```
+
+Log2 the TPM values
+
+```{r}
+tenx_data <- log2(tenx_data+1)
+```
+
+Also we extract the annotation from the object
+
+```{r}
+tenx_annotation <- FetchData(object = seurat_10X2 , vars.all = c("celltype","age") ) %>% rownames_to_column("cell") %>% dplyr::rename(type = celltype)
+```
+
+```{r}
+tenx_annotation$type <- factor(x = tenx_annotation$type , levels = c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2","TAP","NB","OPC","OD"))
+tenx_annotation$age <- factor(x = tenx_annotation$age , levels = c("young","old"))
+```
+
+
+Which celltypes do we have?
+
+```{r}
+tenx_celltype_colors <- c( qNSC1 = "steelblue" , qNSC2 = "steelblue1" , aNSC0 = "tomato" , aNSC1 = "sienna1", aNSC2 = "sienna3" , TAP = "green" , NB = "yellow" , OPC = "pink" , OD = "violet")
+```
+
+Also we can load the genes.tsv file from the CellRanger Output which contains a mapping of ENSEMBL Gene IDs to the Gene names used in the 10X object
+
+```{r}
+tenx_gene_2_ensembl_tbl <- read.table(file = "../10X/count_table/filtered_gene_bc_matrices_mex/mm10/genes.tsv") %>% dplyr::rename( ensembl_gene_id = V1 , gene_symbol = V2 )
+```
+
+We can translate all the gene symbols to ENSEMBL Gene IDS
+
+```{r}
+tenx_ensembl_gene_id <- unlist(lapply( X = rownames(tenx_data) , FUN = function(gene){
+    as.character( tenx_gene_2_ensembl_tbl[ which(tenx_gene_2_ensembl_tbl$gene_symbol == gene) , "ensembl_gene_id" ] )[1] 
+  } ))
+```
+
+Add the ENSEMBL Gene IDs as rownames
+
+```{r}
+tenx_data_ensembl <- tenx_data
+
+rownames(tenx_data_ensembl) <- tenx_ensembl_gene_id
+```
+
+## Load differentially expressed gene lists
+
+### Bulk sequencing
+
+#### NSCs
+
+```{r}
+bulk_DE_genes_NSC <- read.csv(file = "../Bulk_sequencing/DESeq2_results_old_vs_young/GP_DESeq2_results_Old_vs_Yang.csv" , row.names = 1) %>% mutate(gene_symbol = str_to_title(gene_symbol) )
+```
+
+```{r}
+bulk_DE_genes_NSC_Mo7_vs_young <- read.csv(file = "../Bulk_sequencing/DESeq2_results_old_vs_young/GP_DESeq2_results_M7_vs_Young.csv" , row.names = 1)  %>% mutate(gene_symbol = str_to_title(gene_symbol) )
+```
+
+
+#### Neuroblasts
+
+```{r}
+bulk_DE_genes_NB <- read.csv(file = "../Bulk_sequencing/DESeq2_results_old_vs_young/PSA_DESeq2_results_Old_vs_Yang.csv" , row.names = 1)  %>% mutate(gene_symbol = str_to_title(gene_symbol) )
+```
+
+#### Microglia
+
+```{r}
+bulk_DE_genes_Microglia <- read.csv(file = "../Bulk_sequencing/DESeq2_results_old_vs_young/CD11b_DESeq2_results_Old_vs_Yang.csv" , row.names = 1)  %>% mutate(gene_symbol = str_to_title(gene_symbol) )
+```
+
+#### Endothelial Cells
+
+```{r}
+bulk_DE_genes_Endothelial <- read.csv(file = "../Bulk_sequencing/DESeq2_results_old_vs_young/CD31_DESeq2_results_Old_vs_Yang.csv" , row.names = 1)  %>% mutate(gene_symbol = str_to_title(gene_symbol) )
+```
+
+Make a list of the differentially expressed genes
+
+```{r}
+bulk_DE_genes <- list( NSC = bulk_DE_genes_NSC , NB = bulk_DE_genes_NB , Microglia = bulk_DE_genes_Microglia , Endothelial = bulk_DE_genes_Endothelial )
+```
+
+## MA Plots  
+
+```{r}
+MAPlot <- function( x , main = "" , highlight_genes = c() , data = NULL , SMARTseq2 = FALSE , labeL_top_genes = FALSE , max_foldChange = 10 , min_baseMean = 0.1  ,  max_baseMean = 1000000 ){
+  require(dplyr)
+  require(ggplot2)
+  require(ggrepel)
+  
+  if(!is.null(data)){
+    rowmean <- rowMeans(data)
+    
+    rowmean_df <- data.frame(baseMean = as.numeric(rowmean) , gene_symbol = as.character( names(rowmean) ) )
+    
+    if(SMARTseq2){
+      colnames(rowmean_df)[2] <- "ensembl_gene_id"
+      
+      x <- left_join(x = x, y = rowmean_df , by = "ensembl_gene_id" )
+    }else{
+      x <- left_join(x = x, y = rowmean_df , by = "gene_symbol" )
+    }
+  }
+  
+  x_sig <- filter( x , padj < 0.05 & abs(log2FoldChange) > 1 )
+  
+  if( labeL_top_genes ){ x_label <- filter( x_sig ,  abs(log2FoldChange) > 4 ) }
+  
+  x_highlight <- filter( x , gene_symbol %in% highlight_genes )
+  
+  g <- ggplot(data = x , mapping = aes(x = baseMean , y = log2FoldChange )) + geom_point(color = "grey" ) + geom_point(data = x_sig , color = "red" ) + geom_point(data = x_highlight , color = "black", fill = "cyan"  , size = 2 , pch = 21) 
+  
+  if( labeL_top_genes ){
+    g <- g + geom_text_repel(data = x_label , mapping = aes( x = baseMean , y = log2FoldChange , label = gene_symbol))
+  }
+  
+  g <- g + scale_x_log10(limits = c(min_baseMean, max_baseMean ), expand = c(0, 0)) + ggtitle(main) + ylim(c(-max_foldChange,max_foldChange))
+  
+  g
+}
+
+```
+
+
+### Bulk {.tabset .tabset-fade .tabset-pills}
+
+#### NSC {.tabset .tabset-fade .tabset-pills}
+
+##### With Labels
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NSC , main = "NSC (19 Month vs 2 Month)" , labeL_top_genes = TRUE )
+```
+
+
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NSC_Mo7_vs_young, main = "NSC (7 Month vs 2 Month)" , labeL_top_genes = TRUE)
+```
+
+##### Without Labels
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NSC , main = "NSC (19 Month vs 2 Month)" )
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NSC_Mo7_vs_young , main = "NSC (7 Month vs 2 Month)")
+```
+
+#### NB
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NB , main = "NB")
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NB , main = "NB" , labeL_top_genes = TRUE)
+```
+
+
+#### Microglia
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Microglia , main = "Microglia")
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Microglia , main = "Microglia" , labeL_top_genes = TRUE)
+```
+
+#### Endothelial cells
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Endothelial , main = "Endothelial")
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Endothelial , main = "Endothelial" , labeL_top_genes = TRUE)
+```
+
+
+## Heatmaps of gene expression
+
+```{r}
+HeatmapGenes <- function( x , genes = c() , topVar = NULL , main = "" , annotation , annotation_colors , cluster_cols = FALSE , cluster_rows = TRUE , show_rownames = FALSE , show_colnames = FALSE , arrange_by_age = FALSE , keep_non_expressed = FALSE ){
+  require("pheatmap")
+  require("viridisLite")
+  
+  # The cells in the annotation are taken as the cells to be plotted
+  annotation <- remove_rownames(df = annotation)
+  
+  if(! arrange_by_age){
+    annotation <- annotation %>% arrange( type , age)
+  }else{
+    annotation <- annotation %>% arrange( age , type)
+  }
+  
+  if("cell" %in% colnames(annotation)){ names_cols <- annotation %>% pull("cell") %>% as.character() }
+  if("sample" %in% colnames(annotation)){ names_cols <- annotation %>% pull("sample") %>% as.character() }
+  
+  # Then the annotation data.frame is prepared as needed for the pheatmap function with the cell names as rownames
+  if("cell" %in% colnames(annotation)){annotation <- column_to_rownames(df = annotation , var = "cell")}
+  if("sample" %in% colnames(annotation)){annotation <- column_to_rownames(df = annotation , var = "sample")}
+  # We set the order of columns of the annotation to be first age then type 
+  annotation <- annotation[,c("age","type")]
+  
+  # We check for the genes from the list that are available in our data
+  genes <- as.character(genes)
+  genes_avail <- genes[genes %in% rownames(x)]
+  
+  if(!is.null(topVar)){
+    x <- x[,names_cols]
+    
+    var_genes <- names(sort(apply(X = x, MARGIN = 1, FUN = var), decreasing = TRUE)[1:topVar])
+    var_genes <- var_genes[!is.na(var_genes)]
+    
+    x_mat <- x[var_genes ,] 
+  }else{
+    # Only take the values for genes that are from the gene list
+    x_mat <- x[genes_avail,names_cols]
+  }
+
+  # Dicard all the non expressed genes as they would create problems during the clustering process
+  if(!keep_non_expressed){
+    x <- x[apply(X = x, MARGIN = 1, FUN = var) > 0,]
+  }
+  if(keep_non_expressed & cluster_rows){warning("Row clustering cannot be used if unexpressed genes are kept!")}
+  
+  pheatmap(
+    mat = x_mat ,
+    cluster_rows = cluster_rows , 
+    cluster_cols = cluster_cols ,
+    color = viridis(n = 100),
+    show_rownames = show_rownames,
+    show_colnames = show_colnames ,
+    clustering_method = "complete", 
+    clustering_distance_rows = "euclidean" ,
+    border_color = NA,
+    scale = "none",
+    annotation_col = annotation,
+    main = main,
+    fontsize = 5,
+    annotation_colors = annotation_colors
+)
+}
+```
+
+### SMARTseq2 data {.tabset .tabset-fade .tabset-pills}
+
+#### Top Variable Genes in subpopulations {.tabset .tabset-fade .tabset-pills}
+
+##### qNSC1: Top 5000 variable genes 
+
+```{r}
+HeatmapGenes(x = smartseq2_data , topVar = 5000 , main = "SMARTseq2: qNSC1 young and old Top variable genes" , annotation = filter(smartseq2_annotation , type %in% c("qNSC1")) , annotation_colors = list(age = age_colors , type = smartseq2_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### qNSC2: Top 5000 variable genes 
+
+```{r}
+HeatmapGenes(x = smartseq2_data , topVar = 5000 , main = "SMARTseq2: qNSC2 young and old Top variable genes" , annotation = filter(smartseq2_annotation , type %in% c("qNSC2")) , annotation_colors = list(age = age_colors , type = smartseq2_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### aNSC1: Top 5000 variable genes 
+
+```{r}
+HeatmapGenes(x = smartseq2_data , topVar = 5000 , main = "SMARTseq2: aNSC1 young and old Top variable genes" , annotation = filter(smartseq2_annotation , type %in% c("aNSC1")) , annotation_colors = list(age = age_colors , type = smartseq2_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### aNSC2: Top 5000 variable genes
+
+```{r}
+HeatmapGenes(x = smartseq2_data , topVar = 5000 , main = "SMARTseq2: aNSC2 young and old Top variable genes" , annotation = filter(smartseq2_annotation , type %in% c("aNSC2")) , annotation_colors = list(age = age_colors , type = smartseq2_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+### 10X data {.tabset .tabset-fade .tabset-pills}
+
+#### Top Variable Genes in subpopulations {.tabset .tabset-fade .tabset-pills}
+
+##### qNSC1: Top 5000 variable genes 
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: qNSC1 young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("qNSC1")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### qNSC2: Top 5000 variable genes 
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: qNSC2 young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("qNSC2")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE )
+```
+
+##### aNSC0: Top 5000 variable genes 
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: aNSC0 young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("aNSC0")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### aNSC1: Top 5000 variable genes 
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: aNSC1 young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("aNSC1")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### aNSC2: Top 5000 variable genes
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: aNSC2 young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("aNSC2")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+##### TAP: Top 5000 variable genes
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: TAP young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("TAP")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### NB: Top 5000 variable genes
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: NB young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("NB")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### OPC: Top 5000 variable genes
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: OPC young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("OPC")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+##### OD: Top 5000 variable genes
+
+```{r}
+# HeatmapGenes(x = tenx_data_ensembl , topVar = 5000 , main = "10X: OD young and old Top variable genes" , annotation = filter(tenx_annotation , type %in% c("OD")) , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE , cluster_rows = TRUE)
+```
+
+
+## Compare pseudo-bulk Single Cell RNA-seq with bulk samples - mean TPM values
+
+```{r}
+Pseudobulk_bulk_compare <- function( pseudobulk_data = NULL , pseudobulk_celltype = "x" , bulk_celltype = "y" , bulk_data = NULL , annotation_pseudobulk = NULL , annotation_bulk = NULL , celltype_bulk = NULL  , main = "" ){
+  require("ggplot2")
+  require("dplyr")
+  require("tibble")
+  
+  if( is.null(pseudobulk_data) | is.null(bulk_data) ){ stop("You need to supply all data !") }
+  if( is.null(annotation_pseudobulk) | is.null(annotation_pseudobulk) ){stop("You need to supply the annotation !")}
+  
+  
+  ## Strip Log2 transform of the data
+  pseudobulk_data <- 2^(pseudobulk_data)-1
+  bulk_data <- 2^(bulk_data)-1
+  
+  pseudobulk_data <- pseudobulk_data[!is.na(rownames(pseudobulk_data)),]
+  bulk_data <- bulk_data[!is.na(rownames(bulk_data)),]
+  
+  pseudobulk_data <- pseudobulk_data[,annotation_pseudobulk$cell]
+  bulk_data <- bulk_data[,annotation_bulk$sample]
+    
+  pseudobulk_data_comb <- data.frame( expr_x = log2(rowMeans(pseudobulk_data)+1) , ensembl_gene_id = rownames(pseudobulk_data) )
+  bulk_data_comb <- data.frame( expr_y = log2(rowMeans(bulk_data)+1) , ensembl_gene_id = rownames(bulk_data) )
+
+  x <- full_join(x = pseudobulk_data_comb , y = bulk_data_comb , by = "ensembl_gene_id" )
+  
+  g <- ggplot(data = x , mapping = aes(x = expr_x , y = expr_y)) + geom_point(alpha = 0.5) + coord_equal() + labs(x = pseudobulk_celltype , y = bulk_celltype ) + ggtitle(main)
+  
+  g
+  }
+```
+
+### SMARTseq2
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = smartseq2_data , bulk_data = bulk_data , annotation_pseudobulk = filter(smartseq2_annotation, type %in% c("qNSC1","qNSC2","aNSC1","aNSC2"), age == "young") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "young"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(TPM+1))" , bulk_celltype = " bulk samples: NSC (log2(TPM+1))" , main = "Young NSC: pseudo-bulk vs bulk" )
+```
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = smartseq2_data , bulk_data = bulk_data , annotation_pseudobulk = filter(smartseq2_annotation, type %in% c("qNSC1","qNSC2","aNSC1","aNSC2"), age == "old") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "young"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(TPM+1))" , bulk_celltype = " bulk samples: NSC (log2(TPM+1))" , main = "NSC: old pseudo-bulk (SMARTseq2) vs young bulk" )
+```
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = smartseq2_data , bulk_data = bulk_data , annotation_pseudobulk = filter(smartseq2_annotation, type %in% c("qNSC1","qNSC2","aNSC1","aNSC2"), age == "young") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "old"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(TPM+1))" , bulk_celltype = " bulk samples: NSC (log2(TPM+1))" , main = "NSC: young pseudo-bulk (SMARTseq2) vs old bulk" )
+```
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = smartseq2_data , bulk_data = bulk_data , annotation_pseudobulk = filter(smartseq2_annotation, type %in% c("qNSC1","qNSC2","aNSC1","aNSC2"), age == "old") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "old"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(TPM+1))" , bulk_celltype = " bulk samples: NSC (log2(TPM+1))" , main = "Old NSC: pseudo-bulk (SMARTseq2) vs bulk" )
+```
+
+### 10X
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = tenx_data_ensembl , bulk_data = bulk_data , annotation_pseudobulk = filter(tenx_annotation, type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2"), age == "old") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "old"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(expression+1))" , bulk_celltype = " bulk samples: NSC (log2(TPM+1))" , main = "Old NSC: pseudo-bulk (10X) vs bulk" )
+```
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = tenx_data_ensembl , bulk_data = bulk_data , annotation_pseudobulk = filter(tenx_annotation, type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2"), age == "old") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "young"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(expression+1))" , bulk_celltype = " bulk samples: NSC (log2(TPM+1))" , main = "NSC: Old pseudo-bulk (10X) vs young bulk" )
+```
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = tenx_data_ensembl , bulk_data = bulk_data , annotation_pseudobulk = filter(tenx_annotation, type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2"), age == "young") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "old"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(TPM+1))" , bulk_celltype = " bulk samples: NSC (log2(expression+1))" , main = "NSC: Young pseudo-bulk (10X) vs old bulk" )
+```
+
+```{r}
+Pseudobulk_bulk_compare(pseudobulk_data = tenx_data_ensembl , bulk_data = bulk_data , annotation_pseudobulk = filter(tenx_annotation, type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2"), age == "young") , annotation_bulk = filter(bulk_annotation, type %in% c("NSC") , age == "young"), pseudobulk_celltype = "pseudo-bulk samples: NSC (log2(TPM+1))" , bulk_celltype = " bulk samples: NSC (log2(expression+1))" , main = "Young NSC: pseudo-bulk (10X) vs bulk" )
+```
+
+<hr>
+
+## Pseudobulk MA Plot
+
+```{r}
+Pseudobulk_bulk_MAPlot <- function( pseudobulk_data = NULL , annotation_pseudobulk = NULL  , main = "" , labeL_top_genes = FALSE , highlight_genes = c() , max_foldChange = 10  , max_baseMean = 1000000 ){
+  require("ggplot2")
+  require("dplyr")
+  require("tibble")
+  
+  ## Strip Log2 transform of the data
+  pseudobulk_data <- 2^(pseudobulk_data) - 1
+  bulk_data <- 2^(bulk_data) - 1
+
+  if( is.null(pseudobulk_data) ){ stop("You need to supply all data !") }
+  if( is.null(annotation_pseudobulk) ){stop("You need to supply the annotation !")}
+  
+  annotation_pseudobulk_old <- filter(annotation_pseudobulk , age == "old")
+  annotation_pseudobulk_young <- filter(annotation_pseudobulk , age == "young")
+
+  pseudobulk_data <- pseudobulk_data[!is.na(rownames(pseudobulk_data)),]
+    
+  pseudobulk_data_old <- pseudobulk_data[,as.character(annotation_pseudobulk_old$cell)]
+  pseudobulk_data_young <- pseudobulk_data[,as.character(annotation_pseudobulk_young$cell)]
+  
+  pseudobulk_data_complete <- pseudobulk_data[, c( as.character(annotation_pseudobulk_old$cell),as.character(annotation_pseudobulk_young$cell)) ]
+  
+  if( ! all(rownames(pseudobulk_data_old) == rownames(pseudobulk_data_young))){stop("Rownames are not correct: Pseudobulk")}
+
+  pseudobulk_data_comb <- data.frame( log2FoldChange = log2(((rowSums(pseudobulk_data_old) + 1) / (rowSums(pseudobulk_data_young) + 1) ) )  , expr_young_pseudobulk = rowSums(pseudobulk_data_young) , baseMean = rowMeans(pseudobulk_data_complete),  expr_old_pseudobulk = rowSums(pseudobulk_data_old) , gene = rownames(pseudobulk_data_old) )
+  
+  pseudobulk_data_comb$log2FoldChange[is.nan(pseudobulk_data_comb$log2FoldChange)] <- 0
+  
+  x_highlight <- filter(pseudobulk_data_comb ,gene %in% highlight_genes )
+  
+  g <- ggplot(data = pseudobulk_data_comb , mapping = aes(x = baseMean , y = log2FoldChange)) +  labs(x = "baseMean"  , y = "Log2FoldChange" ) + ggtitle(main) + geom_vline(xintercept = 0) + geom_hline(yintercept = 0) + geom_point(color = "grey" ) + geom_point(data = x_highlight , color = "black", fill = "cyan"  , size = 2 , pch = 21) 
+  
+  if( labeL_top_genes ){
+      g <- g + geom_text_repel(data = x_label , mapping = aes( x = baseMean , y = log2FoldChange , label = gene)) 
+  }
+  
+  g <- g + scale_x_log10(limits = c(0.00001, max_baseMean ), expand = c(0, 0)) + ggtitle(main) + ylim(c(-max_foldChange,max_foldChange))
+  
+  g
+  }
+```
+
+```{r fig.width=15, fig.height=15}
+Pseudobulk_bulk_MAPlot(pseudobulk_data = smartseq2_data , annotation_pseudobulk = smartseq2_annotation)
+```
+
+```{r fig.width=15, fig.height=15}
+Pseudobulk_bulk_MAPlot(pseudobulk_data = tenx_data , annotation_pseudobulk = dplyr::filter(tenx_annotation, type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2")) )
+```
+
+
+# Plot individual genes in the single cell datasets
+
+## Beeswarm plot of Il33
+
+### SMARTseq2
+
+```{r}
+IL33_smartseq2_data <- smartseq2_data["ENSMUSG00000024810",]
+```
+
+```{r}
+IL33_smartseq2_df <- data.frame( expression = IL33_smartseq2_data , row.names = names(IL33_smartseq2_data)  ) %>% rownames_to_column("cell") %>% left_join( smartseq2_annotation , by = "cell")
+```
+
+```{r}
+addmargins( table( IL33_smartseq2_df$age  , IL33_smartseq2_df$expression > 2.5 ) )
+```
+
+```{r fig.width=9 , fig.height=5}
+library(ggbeeswarm)
+
+ggplot(data = IL33_smartseq2_df , mapping = aes(x = age , y = expression , color = type )) + geom_quasirandom( size = 1.5 ,method = "smiley" ) + xlab("Age") + ylab("log2(TPM+1)") + ggtitle("Expression of Il33 in the SMARTseq2 data") + scale_x_discrete(labels = c(young = "2 month" , old = "22 month") ) + scale_color_manual( name = "Activation state" , values = smartseq2_celltype_colors ) + guides(color = guide_legend(override.aes=list(size=1.5)))
+```
+
+
+### 10X
+
+```{r}
+IL33_10X_data <- tenx_data_ensembl["ENSMUSG00000024810",]
+```
+
+```{r}
+tenx_annotation_nscs <- tenx_annotation %>% filter( type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2"))
+
+IL33_10X_df <- data.frame( expression = IL33_10X_data , row.names = names(IL33_10X_data)  ) %>% rownames_to_column("cell") %>% filter(cell %in% as.character( tenx_annotation_nscs$cell ) ) %>% left_join( tenx_annotation_nscs , by = "cell")
+```
+
+```{r}
+addmargins( table( IL33_10X_df$age  , IL33_10X_df$expression > 0.5 ) )
+```
+
+```{r fig.width=9 , fig.height=5}
+library(ggbeeswarm)
+
+ggplot(data = IL33_10X_df , mapping = aes(x = age , y = expression , color = type )) + xlab("Age") + ylab("log2(expression+1)") + ggtitle("Expression of Il33 in the 10X data") + scale_x_discrete(labels = c(young = "2 month" , old = "22 month") ) + scale_color_manual( name = "Activation state" , values = tenx_celltype_colors ) + guides(color = guide_legend(override.aes=list(size=1.5))) + geom_quasirandom( size = 0.5 ,method = "smiley" ) 
+```
+
+<hr>
+
+# Search for genes from Gene Lists in all datasets
+
+## InnateDB genes - manually curated from the bulk seq data (from sig. genes with log2FoldChange > 1)
+
+```{r}
+DE_genes_NSCs_bulk_up_InnateDB <- read.csv("GeneLists/Manually_curated_DE_genes_from_bulk/InnateDB_Gene_list/InnateDB_NSCs.csv" , stringsAsFactors = FALSE , header = TRUE)
+
+library(biomaRt)
+mart <- useMart(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+genes_symbol_ensembl <- getBM(attributes = c("mgi_symbol","ensembl_gene_id" ), filters = "mgi_symbol" , values = DE_genes_NSCs_bulk_up_InnateDB$Genes , mart = mart  )
+genes_symbol_ensembl <- dplyr::rename(genes_symbol_ensembl , MGI.symbol = mgi_symbol , gene = ensembl_gene_id )
+
+genes_symbol_ensembl <-  dplyr::filter( genes_symbol_ensembl , gene %in% as.character(bulk_DE_genes_NSC %>% filter(padj < 0.05 , log2FoldChange > 1) %>% pull("ensembl_gene_id") ) )
+
+DE_genes_NSCs_bulk_up_InnateDB <- genes_symbol_ensembl
+```
+
+```{r}
+gene_set <- DE_genes_NSCs_bulk_up_InnateDB
+```
+
+```{r}
+plot_title <- "NSC bulk seq (top DE genes between old and young) annotated in InnateDB"
+```
+
+
+### Bulk {.tabset .tabset-fade .tabset-pills}
+
+#### Bulk sequencing: Heatmap
+
+
+```{r fig.width=5, fig.height=5}
+HeatmapGenes(x = bulk_data , genes = unique(gene_set$gene) , main = paste("Bulk:", plot_title) , annotation = bulk_annotation , show_colnames = FALSE , annotation_colors = list(age = age_colors_bulk ) )
+```
+
+#### Bulk sequencing: MA-Plot {.tabset .tabset-fade .tabset-pills}
+
+##### NSC
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NSC , main = "NSC (19 month vs 2 month)" , highlight_genes = unique(gene_set$MGI.symbol) ) 
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NSC_Mo7_vs_young , main = "NSC (7 Month vs 2 Month)" , highlight_genes = unique(gene_set$MGI.symbol) ) 
+```
+
+##### NB
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NB , main = "NB" , highlight_genes = unique(gene_set$MGI.symbol) ) 
+```
+
+##### Microglia
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Microglia , main = "Microglia" , highlight_genes = unique(gene_set$MGI.symbol) ) 
+```
+
+##### Endothelial cells
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Endothelial , main = "Endothelial" , highlight_genes = unique(gene_set$MGI.symbol) ) 
+```
+
+##### Pseudobulk  SMARTseq2
+
+```{r fig.width=15, fig.height=15}
+Pseudobulk_bulk_MAPlot(pseudobulk_data = smartseq2_data , annotation_pseudobulk = smartseq2_annotation , highlight_genes = unique(gene_set$gene) , main = "Pseudobulk: SMARTseq2")
+```
+
+##### Pseudobulk 10X
+
+```{r fig.width=15, fig.height=15}
+Pseudobulk_bulk_MAPlot(pseudobulk_data = tenx_data , annotation_pseudobulk = dplyr::filter(tenx_annotation, type %in% c("qNSC1","qNSC2","aNSC0","aNSC1","aNSC2")) , highlight_genes = unique(gene_set$MGI.symbol) , main = "Pseudobulk: 10X")
+```
+
+
+### SMARTseq2 {.tabset .tabset-fade .tabset-pills}
+
+#### SMARTseq2 sequencing: Heatmap
+
+##### Arranged by celltype {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+ HeatmapGenes(x = smartseq2_data , genes = unique(gene_set$gene) , main = paste("SMARTseq2:", plot_title) , annotation = smartseq2_annotation , annotation_colors = list(age = age_colors , type = smartseq2_celltype_colors )  )
+```
+
+##### Columns clustered
+
+```{r fig.width=10.1 , fig.height=10.2}
+ test <- HeatmapGenes(x = smartseq2_data , genes = unique(gene_set$gene) , main = paste("SMARTseq2:", plot_title) , annotation = smartseq2_annotation %>% dplyr::filter(type %in% c("qNSC1","qNSC2")) , annotation_colors = list(age = age_colors , type = smartseq2_celltype_colors ) , cluster_cols = TRUE )
+```
+
+
+
+### 10X {.tabset .tabset-fade .tabset-pills}
+
+#### 10X sequencing: Heatmap
+
+```{r fig.width=10.1, fig.height=10.2}
+HeatmapGenes(x = tenx_data_ensembl , genes = unique(gene_set$gene) , main = paste("10X:", plot_title) , annotation = tenx_annotation , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) )
+```
+
+```{r fig.width=10.1, fig.height=10.2}
+HeatmapGenes(x = tenx_data_ensembl , genes = unique(gene_set$gene) , main = paste("10X:", plot_title) , annotation = tenx_annotation , annotation_colors = list(age = age_colors , type = tenx_celltype_colors ) , cluster_cols = TRUE )
+```
+
+
+##  InnateDB genes - manually curated from the bulk seq data (from sig. genes with log2FoldChange > 1) - from Endothelial, NB and Microglia
+
+### Endothelial
+
+```{r}
+DE_genes_Endothelial_bulk_up_InnateDB <- read.csv("GeneLists/Manually_curated_DE_genes_from_bulk/InnateDB_Gene_list/InnateDB_Endos.csv" , stringsAsFactors = FALSE , header = TRUE)
+
+library(biomaRt)
+mart <- useMart(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+genes_symbol_ensembl <- getBM(attributes = c("mgi_symbol","ensembl_gene_id" ), filters = "mgi_symbol" , values = DE_genes_Endothelial_bulk_up_InnateDB$Genes , mart = mart  )
+genes_symbol_ensembl <- dplyr::rename(genes_symbol_ensembl , MGI.symbol = mgi_symbol , gene = ensembl_gene_id )
+
+genes_symbol_ensembl <-  dplyr::filter( genes_symbol_ensembl , gene %in% as.character(bulk_DE_genes_Endothelial %>% filter(padj < 0.05 , log2FoldChange > 1) %>% pull("ensembl_gene_id") ) )
+
+DE_genes_Endothelial_bulk_up_InnateDB <- genes_symbol_ensembl
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Endothelial , main = "Endothelial" , highlight_genes = unique(DE_genes_Endothelial_bulk_up_InnateDB$MGI.symbol) ) 
+```
+
+### Microglia
+
+```{r}
+DE_genes_Microglia_bulk_up_InnateDB <- read.csv("GeneLists/Manually_curated_DE_genes_from_bulk/InnateDB_Gene_list/InnateDB_Microglia.csv" , stringsAsFactors = FALSE , header = TRUE)
+
+library(biomaRt)
+mart <- useMart(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+genes_symbol_ensembl <- getBM(attributes = c("mgi_symbol","ensembl_gene_id" ), filters = "mgi_symbol" , values = DE_genes_Microglia_bulk_up_InnateDB$Genes , mart = mart  )
+genes_symbol_ensembl <- dplyr::rename(genes_symbol_ensembl , MGI.symbol = mgi_symbol , gene = ensembl_gene_id )
+
+genes_symbol_ensembl <-  dplyr::filter( genes_symbol_ensembl , gene %in% as.character(bulk_DE_genes_Microglia %>% dplyr::filter(padj < 0.05 , log2FoldChange > 1) %>% pull("ensembl_gene_id") ) )
+
+DE_genes_Microglia_bulk_up_InnateDB <- genes_symbol_ensembl
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_Microglia , main = "Microglia" , highlight_genes = unique(DE_genes_Microglia_bulk_up_InnateDB$MGI.symbol) ) 
+```
+
+### NB
+
+```{r}
+DE_genes_NB_bulk_up_InnateDB <- read.csv("GeneLists/Manually_curated_DE_genes_from_bulk/InnateDB_Gene_list/InnateDB_Neuroblasts.csv" , stringsAsFactors = FALSE , header = TRUE)
+
+library(biomaRt)
+mart <- useMart(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+genes_symbol_ensembl <- getBM(attributes = c("mgi_symbol","ensembl_gene_id" ), filters = "mgi_symbol" , values = DE_genes_NB_bulk_up_InnateDB$Genes , mart = mart  )
+genes_symbol_ensembl <- dplyr::rename(genes_symbol_ensembl , MGI.symbol = mgi_symbol , gene = ensembl_gene_id )
+
+genes_symbol_ensembl <-  dplyr::filter( genes_symbol_ensembl , gene %in% as.character(bulk_DE_genes_NB %>% dplyr::filter(padj < 0.05 , log2FoldChange > 1) %>% pull("ensembl_gene_id") ) )
+
+DE_genes_NB_bulk_up_InnateDB <- genes_symbol_ensembl
+```
+
+```{r fig.width=15}
+MAPlot(x = bulk_DE_genes_NB , main = "Neuroblast" , highlight_genes = unique(DE_genes_NB_bulk_up_InnateDB$MGI.symbol) ) 
+```
+
+# Load raw counts
+
+We can also compare the raw counts for specific genes that we recover with the different sequencing methods
+
+## Bulk sequencing data
+
+```{r}
+data_bulk <- read.csv(file = "raw_counts/compatible_rownames_only_NSCs/Bulk_seq_All.genes.counts_compat.csv" , row.names = 1)
+
+anno_bulk <- read.csv(file = "raw_counts/annotation_bulk.csv" , row.names = 1)
+```
+
+Check if all cells from the annotation are present in the data as columns and the other way around
+
+```{r}
+all(colnames(data_bulk) == anno_bulk$name)
+```
+
+
+## SMARTseq2 data
+
+```{r}
+data_SMARTseq2_NSCs <- read.csv(file = "raw_counts/compatible_rownames_only_NSCs/SMARTseq2_All.genes.counts_compat.csv" , row.names = 1)
+
+anno_SMARTseq2_NSCs <- read.csv(file = "raw_counts/annotation_NSCs_SMARTseq2.csv" , row.names = 1)
+```
+
+Check if all cells from the annotation are present in the data as columns and the other way around
+
+```{r}
+all(colnames(data_SMARTseq2_NSCs) == anno_SMARTseq2_NSCs$name)
+```
+
+## 10X data
+
+```{r}
+data_10X_NSCs <- read.csv(file = "raw_counts/compatible_rownames_only_NSCs/10X_All.genes.counts_compat.csv" , row.names = 1)
+
+anno_10X_NSCs <- read.csv(file = "raw_counts/annotation_10x_NSCs.csv" , row.names = 1)
+```
+
+```{r}
+colnames(data_10X_NSCs) <- sub(x = colnames(data_10X_NSCs) , pattern = "\\." , replacement = "-" )
+```
+
+
+Check if all cells from the annotation are present in the data as columns and the other way around
+
+```{r}
+all(colnames(data_10X_NSCs) == anno_10X_NSCs$name)
+```
+
+# Check raw counts for highly upregulated genes in bulk NSC old to young comparison
+
+## 10X
+
+How many counts do genes have in the Single cell data sets, that are significantly upregulated in the bulk NSCs
+
+```{r}
+cells_NSCs_10X <- as.character(anno_10X_NSCs$name)
+```
+
+
+### Iigp1 - ENSMUSG00000054072
+
+```{r}
+Iigp1_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000054072",cells_NSCs_10X]) , gene = "Iigp1"   )  %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Iigp1_df$age  , Iigp1_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Iigp1 <- ggplot(data = Iigp1_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Iigp1
+```
+
+### Ddx60 - ENSMUSG00000037921
+
+```{r}
+Ddx60_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000037921",cells_NSCs_10X]) , gene = "Ddx60"   ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ddx60_df$age  , Ddx60_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ddx60 <- ggplot(data = Ddx60_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+```
+
+### Ifit1 - ENSMUSG00000078920
+
+```{r}
+Ifit1_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000078920",cells_NSCs_10X]) , gene = "Ifit1" ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ifit1_df$age  , Ifit1_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ifit1 <- ggplot(data = Ifit1_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ifit1
+```
+
+### Rsad2 - ENSMUSG00000020641
+
+```{r}
+Rsad2_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000020641",cells_NSCs_10X]) , gene = "Rsad2"  ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Rsad2_df$age  , Rsad2_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Rsad2 <- ggplot(data = Rsad2_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Rsad2
+```
+
+### C3 - ENSMUSG00000024164
+
+```{r}
+C3_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000024164",cells_NSCs_10X]) , gene = "C3"   )  %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( C3_df$age  , C3_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_C3 <- ggplot(data = C3_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_C3
+```
+
+
+
+### Ifi44 - ENSMUSG00000028037
+
+```{r}
+Ifi44_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000028037",cells_NSCs_10X]) , gene = "Ifi44"   )  %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ifi44_df$age  , Ifi44_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ifi44 <- ggplot(data = Ifi44_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ifi44
+```
+
+
+### Cxcl10 - ENSMUSG00000034855
+
+```{r}
+Cxcl10_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000034855",cells_NSCs_10X]) , gene = "Cxcl10"   )  %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+```{r}
+addmargins( table( Cxcl10_df$age  , Cxcl10_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Cxcl10 <- ggplot(data = Cxcl10_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Cxcl10
+```
+
+### Il33 - ENSMUSG00000024810
+
+```{r}
+Il33_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000024810",cells_NSCs_10X]) , gene = "Il33"   )  %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Il33_df$age  , Il33_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Il33 <- ggplot(data = Il33_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Il33
+```
+
+
+
+### Ifi47 - ENSMUSG00000078920
+
+```{r}
+Ifi47_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000078920",cells_NSCs_10X]) , gene = "Ifi47"   ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ifi47_df$age  , Ifi47_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ifi47 <- ggplot(data = Ifi47_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ifi47
+```
+
+### Gm4951 - ENSMUSG00000073555
+
+```{r}
+Gm4951_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000073555",cells_NSCs_10X]) , gene = "Gm4951"   ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Gm4951_df$age  , Gm4951_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Gm4951 <- ggplot(data = Gm4951_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Gm4951
+```
+
+### Slc1a3 - ENSMUSG00000005360
+
+```{r}
+Slc1a3_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000005360",cells_NSCs_10X]) , gene = "Slc1a3"   ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Slc1a3_df$age  , Slc1a3_df$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Slc1a3 <- ggplot(data = Slc1a3_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Slc1a3
+```
+
+### Sox2 - ENSMUSG00000074637
+
+```{r}
+Sox2_df <- data.frame( totalReads = colSums(data_10X_NSCs) , geneReads = as.numeric(data_10X_NSCs["ENSMUSG00000074637",cells_NSCs_10X]) , gene = "Sox2"   ) %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Sox2_df$age  , Sox2_df$geneReads > 0 ) )
+```
+
+
+```{r fig.width=6 , fig.height=2}
+gg_Sox2 <- ggplot(data = Sox2_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Sox2
+```
+
+```{r}
+interferon_genes_bulk_df <- bind_rows( Ifit1_df , C3_df , Rsad2_df , Iigp1_df , Ifi47_df , Il33_df , Cxcl10_df , Sox2_df , Slc1a3_df )
+```
+
+### Combine all genes
+
+#### Scatterplot
+
+```{r}
+gg_interferon_genes <- ggplot(data = interferon_genes_bulk_df , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") ) + facet_grid( gene ~ . )
+```
+
+
+```{r fig.width=10 , fig.height=12}
+gg_interferon_genes
+```
+
+#### Barplot
+
+Show the same data as stacked barplots
+
+```{r}
+interferon_genes_bulk_df_bars <- interferon_genes_bulk_df %>% mutate( interval = base::cut( geneReads , breaks = c(-0.1, 0.5,5.5,50.5,Inf) , labels = c("0","1-5","5-50","50-") ) ) %>% group_by(interval,gene,age) %>% summarise( counts = n() ) %>% ungroup() %>% mutate( interval = fct_rev( interval ) , age = fct_recode( .f = age ,  "22 month" = "old",  "2 month" = "young" ) %>% fct_rev() ) %>% group_by(gene,age) %>% mutate( Percent = 100*counts/sum(counts) )
+```
+
+```{r fig.width=18, fig.height=5}
+ggplot( data = interferon_genes_bulk_df_bars , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ gene ) + viridis::scale_fill_viridis( discrete = TRUE , direction = -1 ) + ggtitle("Read counts: 10X")
+```
+
+
+### Bulk NSC genes in InnateDB
+
+Which genes are the ones with high fold changes in the bulk and are annotated in InnateDB
+
+```{r}
+innateDB_genes_NSCs_bulk_up_table <- structure(list(ensembl_gene_id = structure(c(24L, 25L, 9L, 40L, 
+34L, 15L, 17L, 31L, 22L, 30L, 26L, 20L, 19L, 33L, 27L, 4L, 16L, 
+8L, 7L, 29L, 35L, 1L, 12L, 2L, 32L, 13L, 36L, 10L, 3L, 28L, 21L, 
+39L, 23L, 11L, 14L, 6L, 5L, 18L, 38L, 37L), .Label = c("ENSMUSG00000000386", 
+"ENSMUSG00000002325", "ENSMUSG00000005413", "ENSMUSG00000014361", 
+"ENSMUSG00000015766", "ENSMUSG00000017716", "ENSMUSG00000018899", 
+"ENSMUSG00000020122", "ENSMUSG00000020641", "ENSMUSG00000021508", 
+"ENSMUSG00000022306", "ENSMUSG00000023951", "ENSMUSG00000024066", 
+"ENSMUSG00000024079", "ENSMUSG00000024164", "ENSMUSG00000025492", 
+"ENSMUSG00000025498", "ENSMUSG00000026104", "ENSMUSG00000026896", 
+"ENSMUSG00000028270", "ENSMUSG00000029167", "ENSMUSG00000029826", 
+"ENSMUSG00000030341", "ENSMUSG00000034459", "ENSMUSG00000034855", 
+"ENSMUSG00000035692", "ENSMUSG00000036905", "ENSMUSG00000036913", 
+"ENSMUSG00000037860", "ENSMUSG00000038418", "ENSMUSG00000038642", 
+"ENSMUSG00000040747", "ENSMUSG00000046688", "ENSMUSG00000046718", 
+"ENSMUSG00000053113", "ENSMUSG00000054717", "ENSMUSG00000060441", 
+"ENSMUSG00000064215", "ENSMUSG00000074151", "ENSMUSG00000074896"
+), class = "factor"), baseMean = c(1424.95976205735, 146.693384980886, 
+254.747257624993, 1378.74240836277, 232.679222864689, 53.3856147003376, 
+127.295243864467, 100.858827865452, 1254.48226869821, 8484.55808366433, 
+133.391584778487, 449.698563109268, 435.970338794981, 487.652611748752, 
+38.1324871848669, 2270.44585158928, 392.455793416614, 8123.4459446361, 
+495.513923324155, 147.634742373719, 285.437837120322, 20.0485104704833, 
+243.691996897216, 513.924995107202, 17.4190622356759, 18.1436595206331, 
+15890.0096695135, 1952.66573537053, 149.127545170108, 284.046380761723, 
+1257.30518127357, 52.8851930781209, 761.966603230871, 315.283958297394, 
+633.932254776546, 1091.87572537937, 450.61462668542, 1757.25022917456, 
+2425.56654256373, 64.6090952815893), log2FoldChange = c(4.55242859938374, 
+6.95678411131362, 5.03641775134329, 3.37966257532159, 3.73428610778296, 
+5.53141829606081, 3.86121962444797, 3.75531459127234, 2.42356052609584, 
+2.16374238670928, 3.1971506351276, 2.44063114014779, 2.44677858670807, 
+2.0893762261114, 3.67190586863129, 1.88755481055364, 2.10038800171168, 
+1.69845072572928, 1.91183744819457, 2.41403420088619, 2.0284929496982, 
+3.7014584495119, 1.94105240967367, 1.98333192338338, 3.4448344969081, 
+3.44363682239329, 1.57281037684989, 1.63883482734508, 2.11717369111306, 
+1.8668146256893, 1.43386187193389, 2.76038968668686, 1.7580616439951, 
+1.52810896028218, 1.55394451633379, 1.28056799567681, 1.42242513375296, 
+1.26735536508083, 1.18570808766668, 2.12810319958397), lfcSE = c(0.519384243203232, 
+0.81388488255093, 0.641951444263734, 0.48612175786269, 0.578514935508735, 
+0.878589568240684, 0.670578673894941, 0.684535958284751, 0.448804291965827, 
+0.41379046101385, 0.645816741770005, 0.504575112575078, 0.531966043635904, 
+0.460946382208802, 0.845572909706191, 0.436183111157877, 0.505011402058278, 
+0.415807705611759, 0.488183380722589, 0.618808403224005, 0.520676205372646, 
+0.965738215947367, 0.521153307010798, 0.553367834874403, 0.973891191367301, 
+0.97448322263972, 0.448895240692065, 0.468806743609123, 0.606652875776758, 
+0.541455272040843, 0.42118712809647, 0.818497304894856, 0.535426580260121, 
+0.488159657804439, 0.500868295142623, 0.422276770181993, 0.470630833485906, 
+0.427622347529472, 0.406142195700318, 0.7298433146452), stat = c(8.76504949651004, 
+8.54762664900375, 7.84548083246336, 6.95229645795079, 6.45495194432465, 
+6.29579327596285, 5.75804118854651, 5.48592743130992, 5.40003865711778, 
+5.2290774934922, 4.95055397041132, 4.83700261729543, 4.59950144558989, 
+4.53279666953747, 4.34250651420131, 4.32743671698567, 4.1590902564796, 
+4.08470238239196, 3.91622804808462, 3.90110119434225, 3.89588179518673, 
+3.83277619999832, 3.7245324620639, 3.58411132413133, 3.53718621489091, 
+3.53380821997635, 3.50373591492099, 3.49575779292008, 3.48992607741657, 
+3.44777255312879, 3.40433450189738, 3.37250919481214, 3.28347846149326, 
+3.13034667214217, 3.10250125912102, 3.03253241973247, 3.02237981990518, 
+2.96372575568792, 2.91944077768661, 2.91583571005033), pvalue = c(1.86694618820708e-18, 
+1.25645385522089e-17, 4.31297720037574e-15, 3.59387157612209e-12, 
+1.08253248479473e-10, 3.05831732678035e-10, 8.50955946071268e-09, 
+4.11305732780317e-08, 6.66265384184588e-08, 1.70357951680874e-07, 
+7.40025308679816e-07, 1.31811693167268e-06, 4.23503254113743e-06, 
+5.82078401153992e-06, 1.40866307399552e-05, 1.50854667946568e-05, 
+3.19517635376871e-05, 4.41333464318532e-05, 8.99451714694149e-05, 
+9.57561097095347e-05, 9.78421013854258e-05, 0.000126705214745366, 
+0.000195677532925451, 0.000338227814291896, 0.000404414420179005, 
+0.000409618180066453, 0.0004587800815838, 0.000472717577863198, 
+0.000483154175333289, 0.000565229800758029, 0.000663254779320521, 
+0.000744865993665538, 0.00102534479496883, 0.00174600119776919, 
+0.00191892731640661, 0.00242511046065225, 0.00250795646620197, 
+0.00303939026229686, 0.00350660015484411, 0.00354737241964209
+), padj = c(2.76849450249227e-15, 1.43322724762081e-14, 3.55317438357621e-12, 
+1.15855481744162e-09, 2.43225366924561e-08, 5.96734047879288e-08, 
+1.10691453721849e-06, 4.09345819557002e-06, 6.02442035492272e-06, 
+1.40346559193094e-05, 5.05706695963733e-05, 7.72583240307279e-05, 
+0.00020864218455989, 0.000272291501915222, 0.000555143310344139, 
+0.00058560834318839, 0.00109173433525429, 0.00143520481192533, 
+0.00261017015209384, 0.00274124971212874, 0.00278483785306042, 
+0.00341326958812737, 0.00486047258919852, 0.007542225952082, 
+0.00869139338671661, 0.00873989639166249, 0.00959555688266032, 
+0.00981782767805792, 0.00993716125661212, 0.0113267469127579, 
+0.0128318926960938, 0.0140529488804914, 0.0180028284113852, 0.0273477266839752, 
+0.0294878478497343, 0.034989937779684, 0.0357257314479433, 0.0415793911120156, 
+0.0457740965635417, 0.0462249434190444), gene_symbol = c("Ifit1", 
+"Cxcl10", "Rsad2", "Ifit3", "Bst2", "C3", "Irf7", "Ctss", "Zc3hav1", 
+"Egr1", "Isg15", "Gbp2", "Ifih1", "Tifa", "C1qb", "Mertk", "Ifitm3", 
+"Egfr", "Irf1", "Aim2", "Socs3", "Mx1", "Vegfa", "Irf9", "Cd53", 
+"Xdh", "Hmgb2", "Cxcl14", "Hmox1", "Trim67", "Ppargc1a", "Nlrc5", 
+"Tnfrsf1a", "Zfpm2", "Eif2ak2", "Birc5", "Eps8", "Stat1", "Ifi27", 
+"Trim5"), entrezgene = c(15957L, 15945L, 58185L, 15959L, 69550L, 
+102642251L, 54123L, 13040L, 78781L, 13653L, 100038882L, 14469L, 
+71586L, 211550L, 12260L, 17289L, 66141L, 13649L, 16362L, 383619L, 
+12702L, NA, 22339L, 16391L, 12508L, 22436L, 97165L, 57266L, 15368L, 
+330863L, 19017L, 434341L, 21937L, 22762L, 19106L, 11799L, 13860L, 
+20846L, 52668L, 667823L), description = structure(c(19L, 6L, 
+30L, 20L, 3L, 10L, 24L, 4L, 39L, 11L, 26L, 15L, 22L, 33L, 9L, 
+8L, 21L, 13L, 23L, 1L, 32L, 27L, 37L, 25L, 5L, 38L, 17L, 7L, 
+16L, 35L, 29L, 28L, 36L, 40L, 14L, 2L, 12L, 31L, 18L, 34L), .Label = c("absent in melanoma 2 [Source:MGI Symbol;Acc:MGI:2686159]", 
+"baculoviral IAP repeat-containing 5 [Source:MGI Symbol;Acc:MGI:1203517]", 
+"bone marrow stromal cell antigen 2 [Source:MGI Symbol;Acc:MGI:1916800]", 
+"cathepsin S [Source:MGI Symbol;Acc:MGI:107341]", "CD53 antigen [Source:MGI Symbol;Acc:MGI:88341]", 
+"chemokine (C-X-C motif) ligand 10 [Source:MGI Symbol;Acc:MGI:1352450]", 
+"chemokine (C-X-C motif) ligand 14 [Source:MGI Symbol;Acc:MGI:1888514]", 
+"c-mer proto-oncogene tyrosine kinase [Source:MGI Symbol;Acc:MGI:96965]", 
+"complement component 1, q subcomponent, beta polypeptide [Source:MGI Symbol;Acc:MGI:88224]", 
+"complement component 3 [Source:MGI Symbol;Acc:MGI:88227]", "early growth response 1 [Source:MGI Symbol;Acc:MGI:95295]", 
+"epidermal growth factor receptor pathway substrate 8 [Source:MGI Symbol;Acc:MGI:104684]", 
+"epidermal growth factor receptor [Source:MGI Symbol;Acc:MGI:95294]", 
+"eukaryotic translation initiation factor 2-alpha kinase 2 [Source:MGI Symbol;Acc:MGI:1353449]", 
+"guanylate binding protein 2 [Source:MGI Symbol;Acc:MGI:102772]", 
+"heme oxygenase (decycling) 1 [Source:MGI Symbol;Acc:MGI:96163]", 
+"high mobility group box 2 [Source:MGI Symbol;Acc:MGI:96157]", 
+"interferon, alpha-inducible protein 27 [Source:MGI Symbol;Acc:MGI:1277180]", 
+"interferon-induced protein with tetratricopeptide repeats 1 [Source:MGI Symbol;Acc:MGI:99450]", 
+"interferon-induced protein with tetratricopeptide repeats 3 [Source:MGI Symbol;Acc:MGI:1101055]", 
+"interferon induced transmembrane protein 3 [Source:MGI Symbol;Acc:MGI:1913391]", 
+"interferon induced with helicase C domain 1 [Source:MGI Symbol;Acc:MGI:1918836]", 
+"interferon regulatory factor 1 [Source:MGI Symbol;Acc:MGI:96590]", 
+"interferon regulatory factor 7 [Source:MGI Symbol;Acc:MGI:1859212]", 
+"interferon regulatory factor 9 [Source:MGI Symbol;Acc:MGI:107587]", 
+"ISG15 ubiquitin-like modifier [Source:MGI Symbol;Acc:MGI:1855694]", 
+"myxovirus (influenza virus) resistance 1 [Source:MGI Symbol;Acc:MGI:97243]", 
+"NLR family, CARD domain containing 5 [Source:MGI Symbol;Acc:MGI:3612191]", 
+"peroxisome proliferative activated receptor, gamma, coactivator 1 alpha [Source:MGI Symbol;Acc:MGI:1342774]", 
+"radical S-adenosyl methionine domain containing 2 [Source:MGI Symbol;Acc:MGI:1929628]", 
+"signal transducer and activator of transcription 1 [Source:MGI Symbol;Acc:MGI:103063]", 
+"suppressor of cytokine signaling 3 [Source:MGI Symbol;Acc:MGI:1201791]", 
+"TRAF-interacting protein with forkhead-associated domain [Source:MGI Symbol;Acc:MGI:2182965]", 
+"tripartite motif-containing 5 [Source:MGI Symbol;Acc:MGI:3646853]", 
+"tripartite motif-containing 67 [Source:MGI Symbol;Acc:MGI:3045323]", 
+"tumor necrosis factor receptor superfamily, member 1a [Source:MGI Symbol;Acc:MGI:1314884]", 
+"vascular endothelial growth factor A [Source:MGI Symbol;Acc:MGI:103178]", 
+"xanthine dehydrogenase [Source:MGI Symbol;Acc:MGI:98973]", "zinc finger CCCH type, antiviral 1 [Source:MGI Symbol;Acc:MGI:1926031]", 
+"zinc finger protein, multitype 2 [Source:MGI Symbol;Acc:MGI:1334444]"
+), class = "factor"), gene_biotype = structure(c(1L, 1L, 1L, 
+1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 
+1L, 1L, 1L, 1L, 1L), .Label = "protein_coding", class = "factor")), row.names = c(NA, 
+-40L), .Names = c("ensembl_gene_id", "baseMean", "log2FoldChange", 
+"lfcSE", "stat", "pvalue", "padj", "gene_symbol", "entrezgene", 
+"description", "gene_biotype"), class = "data.frame")
+```
+
+```{r}
+innateDB_bulk_up_genes <- innateDB_genes_NSCs_bulk_up_table %>% dplyr::arrange( desc( log2FoldChange )) %>% ungroup() %>% dplyr::select(ensembl_gene_id , gene_symbol )
+
+innateDB_bulk_up_genes <- innateDB_bulk_up_genes[1:7,]
+```
+
+We split the df into a list , rows become fields
+
+```{r}
+genes_up_InnateDB_sms2_bulk_list <- split(innateDB_bulk_up_genes , f = seq(nrow(innateDB_bulk_up_genes)))
+```
+
+Next up we calculate the totalReads and reads for only the specified gene, add the information for cells which age and celltype they belong to.
+
+```{r message=FALSE, warning=FALSE}
+genes_up_InnateDB_data_list <- lapply(genes_up_InnateDB_sms2_bulk_list, function(x){
+  raw_count_data <- data.frame( totalReads = colSums(data_10X_NSCs[,as.character(cells_NSCs_10X)]) , geneReads = as.numeric(data_10X_NSCs[ as.character(x$ensembl_gene_id) ,as.character(cells_NSCs_10X)]) , gene = as.character(x$gene_symbol) )  %>% rownames_to_column("name") %>% left_join(anno_10X_NSCs , by = "name" )
+
+  table_cells_expr <- addmargins( table( raw_count_data$age  , raw_count_data$geneReads > 0 ) )
+
+  # fig.width=6 , fig.height=2
+
+  gg <- ggplot(data = raw_count_data , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") ) + ggtitle(x$gene_symbol)
+
+list( "raw_count_data" = raw_count_data , "numbers_cells_expressing" = table_cells_expr , "plot" = gg  )
+})
+```
+
+We extract the raw_counts data table from the list we have just created
+
+```{r}
+genes_up_InnateDB_data_list_raw_counts <- lapply(genes_up_InnateDB_data_list, function(x){ x$raw_count_data })
+```
+
+and bind together all the data frames for the different genes
+
+```{r message=FALSE, warning=FALSE}
+genes_up_InnateDB_data_plot_10X <- bind_rows(genes_up_InnateDB_data_list_raw_counts)
+```
+
+##### Scatterplot
+
+```{r}
+gg_InnateDB_10X <- ggplot(data = genes_up_InnateDB_data_plot_10X , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") ) + facet_grid( gene ~ .  )
+```
+
+```{r fig.width=10 , fig.height=20}
+gg_InnateDB_10X
+```
+
+##### Barplot
+
+Show the same data as stacked barplots
+
+```{r}
+genes_up_InnateDB_data_plot_10X_bars <- genes_up_InnateDB_data_plot_10X %>% mutate( interval = base::cut( geneReads , breaks = c(-0.1, 0.5,5.5,50.5,Inf) , labels = c("0","1-5","5-50","50-") ) ) %>% group_by(interval,gene,age) %>% summarise( counts = n() ) %>% ungroup() %>% mutate( interval = fct_rev( interval ) , age = fct_recode( .f = age ,  "22 month" = "old",  "2 month" = "young" ) %>% fct_rev() ) %>% group_by(gene,age) %>% mutate( Percent = 100*counts/sum(counts) )
+```
+
+```{r fig.width=7, fig.height=5}
+ggplot( data = genes_up_InnateDB_data_plot_10X_bars , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ gene ) + viridis::scale_fill_viridis( discrete = TRUE , direction = -1 , drop=FALSE ,  name = "Read count" ) + ggtitle("Read counts: 10X") + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5) , strip.text.x = element_text(size = 8)) 
+```
+
+#### 
+
+
+
+## SMARTseq2
+
+How many counts do genes have in the Single cell data sets, that are significantly upregulated in the bulk NSCs
+
+```{r}
+cells_NSCs_SMARTseq2 <- as.character(anno_SMARTseq2_NSCs$name)
+```
+
+### Ifit1 - ENSMUSG00000078920
+
+```{r}
+Ifit1_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000078920",cells_NSCs_SMARTseq2]) , gene = "Ifit1" ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ifit1_df_SMARTseq2$age  , Ifit1_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ifit1_SMARTseq2 <- ggplot(data = Ifit1_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ifit1_SMARTseq2
+```
+
+### Rsad2 - ENSMUSG00000020641
+
+```{r}
+Rsad2_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000020641",cells_NSCs_SMARTseq2]) , gene = "Rsad2"  ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Rsad2_df_SMARTseq2$age  , Rsad2_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Rsad2_SMARTseq2 <- ggplot(data = Rsad2_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Rsad2_SMARTseq2
+```
+
+### C3 - ENSMUSG00000024164
+
+```{r}
+C3_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000024164",cells_NSCs_SMARTseq2]) , gene = "C3"   )  %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( C3_df_SMARTseq2$age  , C3_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_C3_SMARTseq2 <- ggplot(data = C3_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_C3_SMARTseq2
+```
+
+### Iigp1 - ENSMUSG00000054072
+
+```{r}
+Iigp1_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000054072",cells_NSCs_SMARTseq2]) , gene = "Iigp1"   )  %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Iigp1_df_SMARTseq2$age  , Iigp1_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Iigp1_SMARTseq2 <- ggplot(data = Iigp1_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Iigp1_SMARTseq2
+```
+
+
+### Ifi44 - ENSMUSG00000028037
+
+```{r}
+Ifi44_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000028037",cells_NSCs_SMARTseq2]) , gene = "Ifi44"   )  %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ifi44_df_SMARTseq2$age  , Ifi44_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ifi44_SMARTseq2 <- ggplot(data = Ifi44_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ifi44_SMARTseq2
+```
+
+
+### Cxcl10 - ENSMUSG00000034855
+
+```{r}
+Cxcl10_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000034855",cells_NSCs_SMARTseq2]) , gene = "Cxcl10"   )  %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+```{r}
+addmargins( table( Cxcl10_df_SMARTseq2$age  , Cxcl10_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Cxcl10_SMARTseq2 <- ggplot(data = Cxcl10_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Cxcl10_SMARTseq2
+```
+
+### Il33 - ENSMUSG00000024810
+
+```{r}
+Il33_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000024810",cells_NSCs_SMARTseq2]) , gene = "Il33"   )  %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Il33_df_SMARTseq2$age  , Il33_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Il33_SMARTseq2 <- ggplot(data = Il33_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Il33_SMARTseq2
+```
+
+### Ddx60 - ENSMUSG00000037921
+
+```{r}
+Ddx60_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000037921",cells_NSCs_SMARTseq2]) , gene = "Ddx60"   ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ddx60_df_SMARTseq2$age  , Ddx60_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ddx60_SMARTseq2 <- ggplot(data = Ddx60_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ddx60_SMARTseq2
+```
+
+### Ifi47 - ENSMUSG00000078920
+
+```{r}
+Ifi47_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000078920",cells_NSCs_SMARTseq2]) , gene = "Ifi47"   ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Ifi47_df_SMARTseq2$age  , Ifi47_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Ifi47_SMARTseq2 <- ggplot(data = Ifi47_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Ifi47_SMARTseq2
+```
+
+### Gm4951 - ENSMUSG00000073555
+
+```{r}
+Gm4951_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000073555",cells_NSCs_SMARTseq2]) , gene = "Gm4951"   ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Gm4951_df_SMARTseq2$age  , Gm4951_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Gm4951_SMARTseq2 <- ggplot(data = Gm4951_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Gm4951_SMARTseq2
+```
+
+### Slc1a3 - ENSMUSG00000005360
+
+```{r}
+Slc1a3_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000005360",cells_NSCs_SMARTseq2]) , gene = "Slc1a3"   ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Slc1a3_df_SMARTseq2$age  , Slc1a3_df_SMARTseq2$geneReads > 0 ) )
+```
+
+```{r fig.width=6 , fig.height=2}
+gg_Slc1a3_SMARTseq2 <- ggplot(data = Slc1a3_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Slc1a3_SMARTseq2
+```
+
+### Sox2 - ENSMUSG00000074637
+
+```{r}
+Sox2_df_SMARTseq2 <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs) , geneReads = as.numeric(data_SMARTseq2_NSCs["ENSMUSG00000074637",cells_NSCs_SMARTseq2]) , gene = "Sox2"   ) %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+```
+
+```{r}
+addmargins( table( Sox2_df_SMARTseq2$age  , Sox2_df_SMARTseq2$geneReads > 0 ) )
+```
+
+
+```{r fig.width=6 , fig.height=2}
+gg_Sox2_SMARTseq2 <- ggplot(data = Sox2_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") )
+
+gg_Sox2_SMARTseq2
+```
+
+### Combine all genes
+
+```{r}
+interferon_genes_bulk_df_SMARTseq2 <- bind_rows( Ifit1_df_SMARTseq2 , C3_df_SMARTseq2 , Rsad2_df_SMARTseq2 , Iigp1_df_SMARTseq2 , Ifi47_df_SMARTseq2 , Il33_df_SMARTseq2 , Cxcl10_df_SMARTseq2 , Sox2_df_SMARTseq2 , Slc1a3_df_SMARTseq2 )
+```
+
+#### Scatterplot
+
+```{r}
+gg_interferon_genes_SMARTseq2 <- ggplot(data = interferon_genes_bulk_df_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") ) + facet_grid( gene ~ . ) + scale_y_log10() + ylab("log10( geneReads )")
+```
+
+
+```{r fig.width=10 , fig.height=12}
+gg_interferon_genes_SMARTseq2
+```
+
+#### Barplot
+
+Show the same data as stacked barplots
+
+```{r}
+interferon_genes_bulk_df_SMARTseq2_bars <- interferon_genes_bulk_df_SMARTseq2 %>% mutate( interval = base::cut( geneReads , breaks = c(-0.1, 0.5,5.5,50.5,Inf) , labels = c("0","1-5","5-50","50-") ) ) %>% group_by(interval,gene,age) %>% summarise( counts = n() ) %>% ungroup() %>% mutate( interval = fct_rev( interval ) , age = fct_recode( .f = age ,  "22 month" = "old",  "2 month" = "young" ) %>% fct_rev() ) %>% group_by(gene,age) %>% mutate( Percent = 100*counts/sum(counts) )
+```
+
+```{r fig.width=18, fig.height=5}
+ggplot( data = interferon_genes_bulk_df_SMARTseq2_bars , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ gene ) + viridis::scale_fill_viridis( discrete = TRUE , direction = -1 ) + ggtitle("Read counts: SMARTseq2")
+```
+
+
+### Bulk NSC genes in InnateDB
+
+Which genes are the ones with high fold changes in the bulk and are annotated in InnateDB
+
+```{r}
+innateDB_bulk_up_genes <- innateDB_genes_NSCs_bulk_up_table %>% dplyr::arrange( desc( log2FoldChange )) %>% ungroup() %>% dplyr::select(ensembl_gene_id , gene_symbol )
+
+innateDB_bulk_up_genes <- innateDB_bulk_up_genes[1:7,]
+```
+
+We split the df into a list , rows become fields
+
+```{r}
+genes_up_InnateDB_sms2_bulk_list <- split(innateDB_bulk_up_genes , f = seq(nrow(innateDB_bulk_up_genes)))
+```
+
+Next up we calculate the totalReads and reads for only the specified gene, add the information for cells which age and celltype they belong to.
+
+```{r message=FALSE, warning=FALSE}
+genes_up_InnateDB_data_list_SMARTseq2 <- lapply(genes_up_InnateDB_sms2_bulk_list, function(x){
+  raw_count_data <- data.frame( totalReads = colSums(data_SMARTseq2_NSCs[,as.character(cells_NSCs_SMARTseq2)]) , geneReads = as.numeric(data_SMARTseq2_NSCs[ as.character(x$ensembl_gene_id) ,as.character(cells_NSCs_SMARTseq2) ]) , gene = as.character( x$gene_symbol ) )  %>% rownames_to_column("name") %>% left_join(anno_SMARTseq2_NSCs , by = "name" )
+
+  table_cells_expr <- addmargins( table( raw_count_data$age  , raw_count_data$geneReads > 0 ) )
+
+  # fig.width=6 , fig.height=2
+
+  gg <- ggplot(data = raw_count_data , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") ) + ggtitle(x$gene_symbol)
+
+list( "raw_count_data" = raw_count_data , "numbers_cells_expressing" = table_cells_expr , "plot" = gg  )
+})
+```
+
+We extract the raw_counts data table from the list we have just created
+
+```{r}
+genes_up_InnateDB_data_list_SMARTseq2_raw_counts <- lapply(genes_up_InnateDB_data_list_SMARTseq2, function(x){ x$raw_count_data })
+```
+
+and bind together all the data frames for the different genes
+
+```{r message=FALSE, warning=FALSE}
+genes_up_InnateDB_data_plot_SMARTseq2 <- bind_rows(genes_up_InnateDB_data_list_SMARTseq2_raw_counts)
+```
+
+##### Scatterplot
+
+```{r}
+gg_InnateDB_SMARTseq2 <- ggplot(data = genes_up_InnateDB_data_plot_SMARTseq2 , mapping = aes(x = totalReads , y = geneReads ) ) + geom_point(aes(color = age)) + scale_color_manual(values = c("old" = "slateblue" , "young" = "yellowgreen") ) + facet_grid( gene ~ .  )
+```
+
+```{r fig.width=10 , fig.height=20}
+gg_InnateDB_SMARTseq2
+```
+
+##### Barplot
+
+Show the same data as stacked barplots
+
+```{r}
+genes_up_InnateDB_data_plot_SMARTseq2_bars <- genes_up_InnateDB_data_plot_SMARTseq2 %>% mutate( interval = base::cut( geneReads , breaks = c(-0.1, 0.5,5.5,50.5,Inf) , labels = c("0","1-5","5-50","50-") ) ) %>% group_by(interval,gene,age) %>% summarise( counts = n() ) %>% ungroup() %>% mutate( interval = fct_rev( interval ) , age = fct_recode( .f = age ,  "22 month" = "old",  "2 month" = "young" ) %>% fct_rev() ) %>% group_by(gene,age) %>% mutate( Percent = 100*counts/sum(counts) )
+```
+
+```{r fig.width=7, fig.height=5}
+ggplot( data = genes_up_InnateDB_data_plot_SMARTseq2_bars , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ gene ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle("Read counts: SMARTseq2") + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+```
+
+
+## Combined Barplots for 10X and SMARTseq2
+
+```{r}
+genes_up_InnateDB_data_barplot <- bind_rows(
+  dplyr::mutate( genes_up_InnateDB_data_plot_SMARTseq2_bars , seqmethod = "Smart-Seq2" ) , 
+  dplyr::mutate( genes_up_InnateDB_data_plot_10X_bars  , seqmethod = "10X" ) 
+)
+```
+
+
+```{r fig.width=4.1 , fig.height=6}
+idx = 1
+
+gg1 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[[idx]] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+
+gg1
+```
+
+```{r  fig.width=4.1 , fig.height=6}
+idx = 2
+
+ gg2 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[idx] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+ 
+ gg2
+```
+
+```{r  fig.width=4.1 , fig.height=6}
+idx = 3
+
+gg3 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[idx] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+
+gg3
+```
+
+```{r  fig.width=4.1 , fig.height=6}
+idx = 4
+
+gg4 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[idx] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+
+gg4
+```
+
+```{r  fig.width=4.1 , fig.height=6}
+idx = 5
+
+gg5 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[idx] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+
+gg5
+```
+
+```{r  fig.width=4.1 , fig.height=6}
+idx = 6
+
+gg6 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[idx] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+
+gg6
+```
+
+```{r  fig.width=4.1 , fig.height=6}
+idx = 7
+
+gg7 <- ggplot( data = genes_up_InnateDB_data_barplot %>% dplyr::filter( gene == innateDB_bulk_up_genes$gene_symbol[idx] ) , mapping = aes(x = age , y = Percent , fill = interval) ) + geom_bar(stat = "identity") + facet_grid(facets = . ~ seqmethod ) + viridis::scale_fill_viridis( discrete = TRUE , drop=FALSE , direction = -1 , name = "Read count" ) + ggtitle( paste("Read counts:", innateDB_bulk_up_genes$gene_symbol[[idx]] ) ) + theme( axis.text.x = element_text(angle = 90,hjust = 0,vjust = 0.5))
+
+gg7
+```
+
+```{r fig.width=30 , fig.height=5}
+gridExtra::grid.arrange(gg1, gg2, gg3 , gg4, gg5, gg6 , gg7 , nrow = 1)
+```
+
+
+# SessionInfo
+
+```{r}
+sessionInfo()
+```
