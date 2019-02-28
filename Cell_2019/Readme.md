@@ -1,6 +1,7 @@
 # Kalamakis at al. 2019 - Code and Data
-This directory contains code and data corresponding to our publication "Single-cell RNA sequencing reveals
-aging-induced quiescence in neural stem cells of the sub ventricular zone" in Cell, 2019.
+This directory contains code and data corresponding to our publication ["Quiescence modulates
+stem cell maintenance and regenerative capacity in the aging brain"](https://doi.org/10.1016/j.cell.2019.01.040)
+in Cell, 2019.
 
 Each directory contains the R scripts used to generate the figures of our publication.
 The R scripts are provided in these two formats:
