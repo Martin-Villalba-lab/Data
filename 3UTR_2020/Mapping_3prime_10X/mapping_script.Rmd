@@ -1,0 +1,503 @@
+---
+title: "3UTR_Mapping"
+output: html_document
+---
+
+### Define the reference 3'UTR regions (Ensembl)
+
+```{r}
+require(stringr)
+require(dplyr)
+require(GenomicFeatures)
+require(TxDb.Mmusculus.UCSC.mm10.ensGene)
+package.version('TxDb.Mmusculus.UCSC.mm10.ensGene')
+
+# derive genes & 3'UTRs
+txdb             <- TxDb.Mmusculus.UCSC.mm10.ensGene
+txbygene         <- transcriptsBy(txdb, "gene")
+threeUTR         <- threeUTRsByTranscript(txdb) #, use.names = TRUE)
+threeUTR         <- unlist( as(threeUTR, 'GRangesList'))
+threeUTR_reduced <- GenomicRanges::reduce( threeUTR )
+threeUTR_genes   <- findOverlaps( threeUTR_reduced, txbygene )
+
+# change the names of the unique regions
+names(threeUTR_reduced)[threeUTR_genes@from] <- names(txbygene)[threeUTR_genes@to] 
+
+# give every gene with multiple terminal exons a unique name
+names(threeUTR_reduced) <- make.unique(names(threeUTR_reduced), sep = '_')
+
+# inspect this object
+threeUTR_reduced %>% names() %>% head() 
+length(threeUTR_reduced)
+
+# check it for an example gene
+# it has two main terminal exons ~ both with the length of ~ 5000 bp
+dclk1 <- grep('ENSMUSG00000027797', names(threeUTR_reduced) )
+threeUTR_reduced[dclk1]
+
+# change the seq-levels
+seqlevels(threeUTR_reduced) <- str_split(seqlevels(threeUTR_reduced), 'chr', simplify = TRUE)[ ,2]
+threeUTR_reduced            <- keepSeqlevels(threeUTR_reduced, seqlevels(threeUTR_reduced)[1:21], pruning.mode="coarse" )
+seqlevels(threeUTR_reduced) 
+
+# ... and save it
+save(threeUTR_reduced, file = 'threeUTR_reduced.rda')
+
+# Derive the sequences
+require(BSgenome)
+require(BSgenome.Mmusculus.UCSC.mm10)
+BS            <- BSgenome.Mmusculus.UCSC.mm10
+seqlevels(BS) <-   sub("chr", "", seqlevels(BS))
+
+utr_seq <- getSeq(BS, threeUTR_reduced) %>% as.character 
+str(utr_seq[dclk1])
+mean( str_length(utr_seq) )
+identical( length(threeUTR_reduced), length(utr_seq) )
+
+save(utr_seq, file = 'threeUTR_sequences.rda')
+```
+
+### Mapping and BAM-File conversion
+
+```{bash, eval = FALSE}
+# mapping with bowtie2 and samtools
+# adjust local directories 
+# samtools Version: 1.9 (using htslib 1.9)
+
+export PATH=$PATH:/home/centos/bowtie2-2.3.5.1/
+# Bowtie 2 version 2.3.4.3
+
+#########################################################################################
+# young NSC
+cd /mnt/A290/171026_ST-K00207_0098_AHLYCFBBXX/171026_ST-K00207_0098_AHLYCFBBXX/AS-196777-LR-30151/fastq
+cp AS-196777-LR-30151_R1.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRyoungNSC/
+cp AS-196777-LR-30151_R2.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRyoungNSC/
+cd /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRyoungNSC/
+gunzip AS-196777-LR-30151_R1.fastq.gz
+gunzip AS-196777-LR-30151_R2.fastq.gz
+# align
+bowtie2 --very-sensitive-local -p 16 -x /home/centos/MappingRef/MM10_GRCm38_Bowtie2 -1 AS-196777-LR-30151_R1.fastq -2 AS-196777-LR-30151_R2.fastq -S UTRyoungNSCgenome_bwt2.sam
+# 95.45% alignment rate
+samtools view -bS UTRyoungNSCgenome_bwt2.sam > UTRyoungNSCgenome_bwt2.bam
+samtools sort -@ 16 UTRyoungNSCgenome_bwt2.bam UTRyoungNSCgenome_bwt2_sort
+samtools index UTRyoungNSCgenome_bwt2_sort.bam 
+#########################################################################################
+
+#########################################################################################
+# old NSC
+cd /mnt/A290/171026_ST-K00207_0098_AHLYCFBBXX/171026_ST-K00207_0098_AHLYCFBBXX/AS-196779-LR-30152/fastq
+cp AS-196779-LR-30152_R1.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRoldNSC/
+cp AS-196779-LR-30152_R2.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRoldNSC/
+cd /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRoldNSC/
+gunzip AS-196779-LR-30152_R1.fastq.gz 
+gunzip AS-196779-LR-30152_R2.fastq.gz
+# align
+bowtie2 --very-sensitive-local -p 16 -x /home/centos/MappingRef/MM10_GRCm38_Bowtie2 -1 AS-196779-LR-30152_R1.fastq -2 AS-196779-LR-30152_R2.fastq -S UTRoldNSCgenome_bwt2.sam
+# 95.55% alignment rate
+samtools view -bS UTRoldNSCgenome_bwt2.sam > UTRoldNSCgenome_bwt2.bam
+samtools sort -@ 16 UTRoldNSCgenome_bwt2.bam UTRoldNSCgenome_bwt2_sort
+samtools index UTRoldNSCgenome_bwt2_sort.bam  
+#########################################################################################
+
+#########################################################################################
+# in-vitro EGF
+cd /mnt/A290/180518_ST-K00207_0151_AHTTMMBBXX_BMP4/raw_sequence_data/
+cp AS-232291-LR-35205_R1.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRegfNSC/
+cp AS-232291-LR-35205_R2.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRegfNSC/
+cd /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRegfNSC/
+gunzip AS-232291-LR-35205_R1.fastq.gz  
+gunzip AS-232291-LR-35205_R2.fastq.gz 
+# align
+bowtie2 --very-sensitive-local -p 15 -x /home/centos/MappingRef/MM10_GRCm38_Bowtie2 -1 AS-232291-LR-35205_R1.fastq -2 AS-232291-LR-35205_R2.fastq -S UTRegfNSCgenome_bwt2.sam
+# alignment rate 95.34%
+samtools view -bS UTRegfNSCgenome_bwt2.sam > UTRegfNSCgenome_bwt2.bam
+samtools sort -@ 15 UTRegfNSCgenome_bwt2.bam UTRegfNSCgenome_bwt2_sort
+samtools index UTRegfNSCgenome_bwt2_sort.bam  
+#########################################################################################
+
+#########################################################################################
+# in-vitro BMP4
+cd /mnt/A290/180518_ST-K00207_0151_AHTTMMBBXX_BMP4/raw_sequence_data/
+cp AS-232289-LR-35204_R1.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRbmp4NSC/
+cp AS-232289-LR-35204_R2.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRbmp4NSC/
+cd /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRbmp4NSC/
+gunzip AS-232289-LR-35204_R1.fastq.gz  
+gunzip AS-232289-LR-35204_R2.fastq.gz 
+# align
+bowtie2 --very-sensitive-local -p 16 -x /home/centos/MappingRef/MM10_GRCm38_Bowtie2 -1 AS-232289-LR-35204_R1.fastq -2 AS-232289-LR-35204_R2.fastq -S UTRbmp4NSCgenome_bwt2.sam
+# alignment rate 95.65%
+samtools view -bS UTRbmp4NSCgenome_bwt2.sam > UTRbmp4NSCgenome_bwt2.bam
+samtools sort -@ 16 UTRbmp4NSCgenome_bwt2.bam UTRbmp4NSCgenome_bwt2_sort
+samtools index UTRbmp4NSCgenome_bwt2_sort.bam  
+#########################################################################################
+
+#########################################################################################
+# Aplp1 WT
+cd /mnt/A290/190927_A00382_0066_BHCYVWDRXX_Aplp1_ReSeq/raw_sequencing_data/
+cp WTR6_cDNA_Lib_R1.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1WTNSC/
+cp WTR6_cDNA_Lib_R2.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1WTNSC/
+cd /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1WTNSC/
+gunzip WTR6_cDNA_Lib_R1.fastq.gz  
+gunzip WTR6_cDNA_Lib_R2.fastq.gz
+# align
+export PATH=$PATH:/home/centos/bowtie2-2.3.5.1/
+bowtie2 --very-sensitive-local -p 16 -x /home/centos/MappingRef/MM10_GRCm38_Bowtie2 -1 WTR6_cDNA_Lib_R1.fastq -2 WTR6_cDNA_Lib_R2.fastq -S UTRaplp1WTNSCgenome_bwt2.sam
+# 96.17% overall alignment rate
+samtools view -@ 16 -bS UTRaplp1WTNSCgenome_bwt2.sam > UTRaplp1WTNSCgenome_bwt2.bam
+samtools sort -@ 16 UTRaplp1WTNSCgenome_bwt2.bam UTRaplp1WTNSCgenome_bwt2_sort
+samtools index UTRaplp1WTNSCgenome_bwt2_sort.bam  
+#########################################################################################
+
+#########################################################################################
+# Aplp1 KO
+cd /mnt/A290/190927_A00382_0066_BHCYVWDRXX_Aplp1_ReSeq/raw_sequencing_data/
+cp APLP1_KO_cDNA_Lib_R1.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1KONSC/
+cp APLP1_KO_cDNA_Lib_R2.fastq.gz /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1KONSC/
+cd /mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1KONSC/
+gunzip APLP1_KO_cDNA_Lib_R1.fastq.gz  
+gunzip APLP1_KO_cDNA_Lib_R2.fastq.gz
+# align
+export PATH=$PATH:/home/centos/bowtie2-2.3.5.1/
+bowtie2 --very-sensitive-local -p 16 -x /home/centos/MappingRef/MM10_GRCm38_Bowtie2 -1 APLP1_KO_cDNA_Lib_R1.fastq -2 APLP1_KO_cDNA_Lib_R2.fastq -S UTRaplp1KONSCgenome_bwt2.sam
+# alignment rate 96.04%
+samtools view -@ 16 -bS UTRaplp1KONSCgenome_bwt2.sam > UTRaplp1KONSCgenome_bwt2.bam
+samtools sort -@ 16 UTRaplp1KONSCgenome_bwt2.bam UTRaplp1KONSCgenome_bwt2_sort
+samtools index UTRaplp1KONSCgenome_bwt2_sort.bam  
+#########################################################################################
+
+```
+
+### Extract the 3'UTR position
+
+### ... define the function to derive 3'UTR positions with parallel processing (Unix system)
+
+```{r}
+extract3utrPositions_parallel <- function(pathtobam,        # path to BAM-file 
+                                          chunk_size = 200, # transcripts processed by one 'worker' at a time
+                                          use_cores = 15){  # number of 'workers' 
+# extract the positions of 3'UTR regions from BAM-files
+suppressPackageStartupMessages(library(BiocParallel))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(require(stringr))
+suppressPackageStartupMessages(library(GenomicAlignments))
+load(file = 'threeUTR_reduced.rda') # created in the first chunk
+utr_tbl_master <- list()
+nregions       <- seq_along(threeUTR_reduced)
+chunks         <- split( nregions, ceiling(seq_along(nregions)/chunk_size)) 
+n_chunks       <- seq_along(chunks)
+paral          <- SnowParam(workers = use_cores, type = "SOCK", progressbar = TRUE)
+message(paste('Started processing chunks!!', Sys.time(), sep = '  ') )
+
+utr_tbl_master <- bplapply(n_chunks,
+                           function(x,
+                                    chunks,
+                                    threeUTR_reduced,
+                                    pathtobam){ # parallel loop start
+ # for every chunk
+ chunk_idx <- chunks[[x]]
+ if( x %% 10 == 0) message(paste0('Processing chunk: ', x, ' of ', length(n_chunks) ))
+
+ # define the paramters for the BAM-File
+ param <- ScanBamParam(flag=scanBamFlag(isProperPair=TRUE,
+                                       isDuplicate=FALSE,
+                                       isSecondaryAlignment=FALSE
+                                       ),
+                      which = threeUTR_reduced[chunk_idx],
+                      what = c('pos', 'qname', 'seq' ))
+
+ # load the alignments into memory
+ yngal <- readGAlignmentPairs(pathtobam,
+                             param=param,
+                             use.names = TRUE,
+                             with.which_label=TRUE)
+
+# extract the mapping position of read1
+read1          <- first(yngal)
+# get the orientation of read1
+read1_strand   <- decode(strand(read1))
+# get the assignment of regions as full vector
+read1_region   <- decode(read1@elementMetadata@listData$which_label)
+# make a list with every entry being a region
+read1_by_range <- tapply( seq_along(read1), read1_region, function(x, y){ y[x] }, y = read1 )
+# exclude those regions with 0 entries
+read_idx       <- !unlist(lapply(read1_by_range, is.null))
+# get the starts of 3'UTR regions                         ... keep strand orientation
+region_starts  <- start(threeUTR_reduced[chunk_idx][read_idx], ignore.stand = FALSE) 
+region_ends    <- end(threeUTR_reduced[chunk_idx][read_idx],   ignore.stand = FALSE) 
+# compute the local 3'UTR positions (3'UTR lengths, considering the region and strand orientation)
+local_strand   <- strand(threeUTR_reduced)[chunk_idx][read_idx] %>% decode() %>% as.character()
+read1_pos      <- mapply(function(x, y1, y2, z){ if(z == '+') return(end(x) - y1); return(y2 - start(x)) },
+                         x = read1_by_range[read_idx], y1 = region_starts, y2 = region_ends, z = local_strand )
+# get the read-name, read orientation & read1 sequence
+read1_cig      <- lapply(read1_by_range[read_idx], function(x){ cigar(x) } )
+read1_ori      <- lapply(read1_by_range[read_idx], function(x){ decode(strand(x)) } )
+read1_seq      <- lapply(read1_by_range[read_idx], function(x){  x@elementMetadata@listData$seq  } )
+# compute the reverse complement if on the '-' strand
+read1_rev      <- mapply(function(x, y){ x[y == '-'] <- reverseComplement(x[y == '-']); x }, x = read1_seq, y = read1_ori )
+# extract barcodes and read lengths
+read1_bar      <- lapply(read1_rev, function(x) { return(stringr::str_sub(x, 1, 28)) } )
+read1_len      <- lapply(read1_rev, function(x) { str_length(x) } )
+# write this into a tibble
+utr_tbl_list   <- mapply(function(x1, x2, x3, x4, x5){ 
+                         tibble(utr_len = x1, cell = x2, strand = x3, cigar = x4, trim_len = x5)
+                        },
+                        x1 = read1_pos,
+                        x2 = read1_bar,
+                        x3 = read1_ori,
+                        x4 = read1_cig,
+                        x5 = read1_len,
+                        SIMPLIFY = FALSE)
+
+# name the lists by the regions
+gene_chunk       <- names(threeUTR_reduced)[chunk_idx][read_idx]
+names(utr_tbl_list) <- gene_chunk
+# append the new chunk entries
+ utr_tbl_list
+ }, chunks, threeUTR_reduced, pathtobam)
+# process final output
+utr_tbl_master <- unlist(utr_tbl_master, recursive = FALSE)
+utr_tbl_master <- utr_tbl_master[ !is.na(names(utr_tbl_master)) ]
+message(paste('All chunks finished!', Sys.time(), sep = '  ') )
+
+return(utr_tbl_master)
+}
+```
+
+
+### ... run all samples
+
+```{r, eval = FALSE}
+# for young NSCs
+setwd('/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping')
+yng <- extract3utrPositions(pathtobam = '/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRyoungNSC/UTRyoungNSCgenome_bwt2_sort.bam', chunk_size = 250)
+save(yng, 'UTRyoungNSC/poslist/utr_tbl_master.rda')
+
+# for old NSCs
+setwd('/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping')
+old <- extract3utrPositions(pathtobam = '/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRoldNSC/UTRoldNSCgenome_bwt2_sort.bam', chunk_size = 250)
+save(old, 'UTRoldNSC/poslist/utr_tbl_master.rda')
+
+# for egf NSCs
+setwd('/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping')
+egf <- extract3utrPositions(pathtobam = '/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRegfNSC/UTRegfNSCgenome_bwt2_sort.bam', chunk_size = 250)
+save(egf, 'UTRegfNSC/poslist/utr_tbl_master.rda')
+
+# for bmp4 NSCs
+setwd('/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping')
+bmp <- extract3utrPositions(pathtobam = '/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRbmp4NSC/UTRbmp4NSCgenome_bwt2_sort.bam', chunk_size = 250)
+save(bmp, 'UTRbmp4NSC/poslist/utr_tbl_master.rda')
+
+# for Aplp1 WT
+setwd('/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping')
+awt <- extract3utrPositions_parallel(pathtobam = '/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1WTNSC/UTRaplp1WTNSCgenome_bwt2_sort.bam', chunk_size = 250)
+save(awt, 'UTRaplp1WTNSC/poslist/utr_tbl_master.rda')
+
+# for Aplp1 KO
+setwd('/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping')    
+ako <- extract3utrPositions_parallel(pathtobam = '/mnt/goepferich/3UTR_REANALYSIS_2019/Mapping/UTRaplp1KONSC/UTRaplp1KONSCgenome_bwt2_sort.bam', chunk_size = 250)  
+save(ako, 'UTRaplp1KONSC/poslist/utr_tbl_master.rda')
+```
+
+### ... pre-filter the 3'end lists
+
+> ... define the S4 class
+
+```{r}
+require(GenomicRanges)
+require(dplyr)
+require(plyr)
+require(stringr)
+require(pbapply)
+require(stringdist)
+
+MFSCpeakList <- setClass("MFSCpeakList",
+                      slots = list(
+                        NAMES    = 'character',
+                        Ranges   = 'GRanges',
+                        Sequence = 'tbl_df',
+                        listData = 'list',
+                        metadata = 'tbl_df'
+                      ))
+
+MFSCpeak <- setClass("MFSCpeak",
+                      slots = list(
+                        features   = 'integer',   
+                        support    = 'integer',    
+                        peaks      = 'integer',
+                        coverage   = 'integer',
+                        partition  = 'factor',
+                        cellMean   = 'numeric',
+                        cellIdx    = 'integer',
+                        counts     = 'matrix'
+                      ))
+
+```
+
+> ... define the peak-calling function
+
+```{r}
+filterSingleCellPeaks <- function(threeUTRposList, threeRegions, threeSequences, cellAnnotation){
+  # subset the Range and strand information
+  threeRegions   <- threeRegions[names(threeUTRposList)]
+  threeSequences <- threeSequences[names(threeUTRposList)]
+  strand_orient  <- strand(threeRegions) %>% as.character()
+  genes          <- names(threeRegions)
+  names(genes)   <- substring(genes, 1, 18)
+  # transform the single cell information
+  ref  <- cellAnnotation$CellBarcode 
+  filtered       <- pbmapply(filter_peaks, x = threeUTRposList, s = strand_orient, MoreArgs = list(ref = ref) ) # argument bar
+  null_idx       <- !sapply(filtered, is.null)
+  # create the final object
+  out <- new("MFSCpeakList",
+      NAMES    = genes[null_idx],
+      Ranges   = threeRegions[null_idx],
+      Sequence = tibble(Seqeuence = threeSequences,
+                         Length    = width(threeRegions),
+                         Strand    = strand_orient)[null_idx, ],
+      listData = filtered[null_idx],
+      metadata = as_tibble(cellAnnotation)
+      )
+  return(out)
+}
+
+
+filter_peaks <- function(x, s, ref){ # argument bar
+# detect peaks  
+ # filter reads and match 10X barcodes   
+ orient    <- ifelse(s == '-', '+', '-')
+ x         <- filter(x, utr_len > 0 & strand == orient) 
+ query     <- str_sub(x$cell, 1, 16)
+ query     <- paste0( query, substring(x$cell, 29, 32) ) #paste0( query, substring(x$cell, 27, 29) ) for a shorter UMI
+ matched   <- amatch(query, ref, method = 'hamming', maxDist = 1 )
+ na_idx    <- !is.na(matched)
+ qy_idx    <- matched[na_idx]
+
+  if( length(unique(qy_idx)) > 9 ){
+    # if enough cells matched proceed
+    x_         <- x[na_idx, ]   
+    umi_fac    <- query[na_idx] 
+    utrMedEnd  <- as.integer(tapply(x_$utr_len, umi_fac, median))
+    umiCell    <- tapply( ref[qy_idx], umi_fac, unique) %>% unname() %>% as.vector() 
+    utrMap     <- tabulate(utrMedEnd)
+    ends       <- unique(utrMedEnd)
+    fac        <- rep(NA, times = length(utrMap))
+    len        <- tapply(utrMedEnd, umiCell, mean) %>% as.vector()
+    peaks      <- which.max(utrMap)
+    if(utrMap[peaks] > 2){
+     # at least one peak needs to be 2 UMIs  
+     premax     <- unique(seq_along(utrMap)[utrMap > 1 ])
+     if( any(diff(premax) > 24) ){
+      # if a second maximum is at least 50bp away from the main peak
+      preclust   <- cutree(hclust(dist(premax, method = 'manhattan'), method = 'single'), h = 50)
+      peaks      <- tapply(premax, preclust, median) %>% as.integer()
+      partitions <- vapply(ends, function(x, y){ which.min(abs(y - x)) }, 1, y = peaks)
+      fac[ends]  <- partitions
+      clorder    <- unique(fac)[!is.na(unique(fac))]
+      fac        <- mapvalues(fac, from = clorder, to = sort(clorder) )
+      partitions <- plyr::mapvalues(utrMedEnd, from = as.factor(ends), to = as.factor(partitions)) %>% as.integer()
+     } else {
+      fac[utrMap > 0] <- 1
+      partitions <- rep(1, times = length(utrMedEnd)) 
+    }
+      # create the final table
+      tab           <- xtabs( rep(1, length(umiCell)) ~ umiCell + partitions )
+      mat           <- matrix( as.integer(tab), dim(tab)[1], dim(tab)[2] )
+      rownames(mat) <- rownames(tab)
+      # write this into the final object
+      out <- new("MFSCpeak",
+                        features   = length(peaks),  
+                        support    = as.integer(colSums(mat)),     
+                        peaks      = peaks,
+                        coverage   = utrMap,
+                        partition  = as.factor(fac),
+                        cellMean   = len,
+                        #sampleID   = mapvalues( sampleID),
+                        cellIdx    = match(rownames(mat), ref), # was bar
+                        counts     = mat)
+  # return the object
+  return(out)
+    } else { # no peak(s)
+      return(NULL)
+    }
+ } else { # not enough cells
+  return(NULL)
+ }    
+} # end of this function
+```
+
+> ... run the algorithm for young and old NSCs
+
+```{r}
+# load the list for young NSCs
+load( 'UTRyoungNSC/poslist/utr_tbl_master.rda')
+yng_pos  <- lapply(utr_tbl_master, function(x){ mutate(x, cell = paste0(cell, '-2') ) })
+# load the list for old NSCs
+load( 'UTRoldNSC/poslist/utr_tbl_master.rda')
+old_pos  <- lapply(utr_tbl_master, function(x){ mutate(x, cell = paste0(cell, '-1') ) })
+# join theses lists and save the result
+vivo_idx <- intersect( names(yng_pos), names(old_pos) )
+vivo_pos <- mapply(function(x, y){ rbind(x, y) }, x = yng_pos[vivo_idx], y = old_pos[vivo_idx], SIMPLIFY = FALSE)
+save(vivo_pos, file = 'vivo_pos.rda')
+# load the annotation of 3'UTRs & and the one of samples
+load(file = 'vivo_pos.rda')
+load(file = 'threeUTR_sequences.rda')
+load(file = 'threeUTR_reduced.rda')
+load('vivo_anno.rda') # an annotation file (data.frame or tibble)
+# run the peak-calling algorithm
+vivoFiltered <- filterSingleCellPeaks(vivo_pos, threeUTR_reduced, utr_seq, cellAnnotation = vivo_anno)
+save(vivoFiltered, file = 'vivoFiltered.rda')
+```
+
+> ... run the algorithm for in-vitro NSCs
+
+```{r}
+#require(stringr)
+setwd("/Volumes/g381-daten2/goepferich/3UTR_REANALYSIS_2019/Mapping")
+# load the list for vitro control NSCs
+load( 'UTRegfNSC/poslist/utr_tbl_master.rda')
+egf_pos  <- lapply(utr_tbl_master, function(x){ mutate(x, cell = paste0(cell, '-2') ) })
+# load the list for vitro BMP4 NSCs
+load( 'UTRbmp4NSC/poslist/utr_tbl_master.rda')
+bmp_pos  <- lapply(utr_tbl_master, function(x){ mutate(x, cell = paste0(cell, '-1') ) })
+# join theses lists and save the result
+vitro_idx <- intersect( names(egf_pos), names(bmp_pos) )
+vitro_pos <- mapply(function(x, y){ rbind(x, y) }, x = egf_pos[vitro_idx], y = bmp_pos[vitro_idx], SIMPLIFY = FALSE)
+save(vitro_pos, file = 'vitro_pos.rda')
+# load the annotation of 3'UTRs & and the one of samples
+load(file = 'vitro_pos.rda')
+load(file = 'threeUTR_sequences.rda')
+load(file = 'threeUTR_reduced.rda')
+load('vitro_anno.rda')
+# run the peak-calling algorithm
+vitroFiltered <- filterSingleCellPeaks(vitro_pos, threeUTR_reduced, utr_seq, cellAnnotation = vitro_anno)
+save(vitroFiltered, file = 'vitroFiltered.rda')
+```
+
+> ... run the algorithm for Aplp1-KO NSCs
+
+```{r}
+require(stringr)
+setwd("/Volumes/g381-daten2/goepferich/3UTR_REANALYSIS_2019/Mapping")
+# load the list for vitro control NSCs
+load( 'UTRaplp1WTNSC/poslist/utr_tbl_master.rda')
+awt_pos  <- lapply(utr_tbl_master, function(x){ mutate(x, cell = paste0(cell, '_WT') ) })
+# load the list for vitro BMP4 NSCs
+load( 'UTRaplp1KONSC/poslist/utr_tbl_master.rda')
+ako_pos  <- lapply(utr_tbl_master, function(x){ mutate(x, cell = paste0(cell, '_KO') ) })
+
+# join theses lists and save the result
+aplp1_idx <- intersect( names(awt_pos), names(ako_pos) )
+aplp1_pos <- mapply(function(x, y){ rbind(x, y) }, x = awt_pos[aplp1_idx], y = ako_pos[aplp1_idx], SIMPLIFY = FALSE)
+save(aplp1_pos, file = 'aplp1_pos.rda')
+
+# load the annotation of 3'UTRs & and the one of samples
+load(file = 'aplp1_pos.rda')
+load(file = 'threeUTR_sequences.rda')
+load(file = 'threeUTR_reduced.rda')
+load('aplp1_anno.rda')
+# run the peak-calling algorithm
+aplp1Filtered <- filterSingleCellPeaks(aplp1_pos, threeUTR_reduced, utr_seq, cellAnnotation = aplp1_anno)
+save(aplp1Filtered, file = 'aplp1Filtered.rda')
+```
+
+### End
