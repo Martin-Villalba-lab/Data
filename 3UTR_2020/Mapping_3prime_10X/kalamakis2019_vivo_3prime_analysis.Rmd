@@ -1,0 +1,687 @@
+---
+title: "Vivo_Analysis"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+> Analysis of 3'UTR usage in neural stem cells of the subventricular zone (from Kalamakis et al. 2019)
+
+Final plots in the paper may differ slightly due to:
+
+* figures are not in order as in the paper (due to the intrinsic logic of this script and the input data)
+* changes pending on the peer-review process
+* collecting and final editing of sub-plots in Adobe Illustrator
+* differences R package versions or other parameters
+
+> Note: This is a reporting file providing all the necessary programming code to comprehend the main results of the paper.
+
+> Note: Precompield files are provided in this directory.
+
+```{r package-options, include=FALSE}
+knitr::opts_knit$set(warning=FALSE, fig.width=8, fig.height=8)  
+```
+
+> Note: Computed as HTML-File
+
+## Downstream Analysis of in-vivo 3'UTRs (young + old NSCs)
+
+```{r packages_s4, echo = FALSE, message = FALSE, warning = FALSE}
+# load packages and set S4 class
+require(tidyverse)
+require(GenomicRanges)
+require(stringr)
+require(splines)
+require(nnet)
+require(pbapply)
+require(AnnotationDbi)
+require(ggpointdensity)
+require(viridis)
+require(gridExtra)
+
+MFSCpeakList <- setClass("MFSCpeakList",
+                      slots = list(
+                        NAMES    = 'character',
+                        Ranges   = 'GRanges',
+                        Sequence = 'tbl_df',
+                        listData = 'list',
+                        metadata = 'tbl_df'
+                      ))
+
+MFSCpeak <- setClass("MFSCpeak",
+                      slots = list(
+                        features   = 'integer',   
+                        support    = 'integer',    
+                        peaks      = 'integer',
+                        coverage   = 'integer',
+                        partition  = 'factor',
+                        cellMean   = 'numeric',
+                        cellIdx    = 'integer',
+                        counts     = 'matrix'
+                      ))
+
+get_mfsc          <- function(x, what = 'features'){ lapply(x@listData, function(x, y){ slot(x, y) }, y = what) }
+get_annotation    <- function(x){ lapply(x@listData, function(x, y){ y[x@cellIdx, ] }, y = x@metadata) }
+
+setMethod('[', signature = c('MFSCpeakList', 'logical', 'missing', 'missing') , definition = function(x, i){
+          x@listData <- x@listData[i]; x@NAMES <- x@NAMES[i]; x@Ranges <- x@Ranges[i]; x@Sequence <- x@Sequence[i, ]; return(x) } )
+```
+
+## ... load the previously created 3'mapping file 
+
+```{r input_data}
+# load the stored 3'UTR object
+load(file = '/Volumes/g381-daten2/goepferich/3UTR_REANALYSIS_2019/vivo_downstream/vivoFiltered.rda')
+```
+
+## ... some basic metrices & 3'tail-peak analysis
+
+```{r apa_subset}
+length( vivoFiltered@NAMES ) # number of exons
+length( unique( names(vivoFiltered@NAMES ) ) ) # number of genes
+sum( tapply(vivoFiltered@NAMES, names(vivoFiltered@NAMES), length ) > 1 ) # number of genes with multiple exons (used)
+
+apa <- get_mfsc(vivoFiltered, 'features' ) %>% unlist()
+apa <- apa > 1
+table(apa) # TRUE, exons with APA events
+
+# subset to genes with only (potentially) APA events
+apaFiltered <- vivoFiltered[apa]
+```
+
+## ... create some nice lists with the S4 approach
+
+> These lists are required for the transcript-by-transcript approach
+
+```{r transcript_wise_data}
+# create lists of the required input-values
+ctab_list <- get_mfsc(apaFiltered, 'counts')
+clen_list <- get_mfsc(apaFiltered, 'cellMean')
+peak_list <- get_mfsc(apaFiltered, 'peaks')
+supp_list <- get_mfsc(apaFiltered, 'support')
+anno_list <- get_annotation(apaFiltered)
+
+# The list of isoform count tables!
+str( head(ctab_list, n = 2) )
+
+# The list of 3'UTR lengths!
+str( head(clen_list, n = 2) )
+
+# The list of matched cell annotations
+str( head(anno_list, n = 2) )
+```
+
+## ... multinomial regreossion analysis with the 'nnet' package
+
+> First separately for both samples (young + old) using LRT-statistic
+
+> The hypothesis is that 3'UTR isoform choice changes with pseudotime (NSC lineage progression)
+
+```{r mnr_statistics, warning=FALSE, message=FALSE}
+# apply multinomial regression
+young_stat <- mapply(function(x, y, dof){
+            if(sum(y$CellAge == 'young') > 9 & sum(colSums(x[y$CellAge == 'young', ,drop= F]) > 1) > 1 ){
+            x <- x[y$CellAge == 'young', ,drop= F]
+            y <- y[y$CellAge == 'young', ,drop = F]
+            # compute the multinomial regression
+                    fit1 <- nnet::multinom(x ~  bs(y$pTime, df = 5), trace = FALSE )
+                    fit0 <- nnet::multinom(x ~ 1, trace = FALSE )
+            pval <- anova(fit1, fit0)$'LR stat.'[2]  
+            } else {
+              pval <- NA
+            }
+              return(pval)  
+}, x = ctab_list, y = anno_list, SIMPLIFY = FALSE )
+young_stat <- unlist2(young_stat)
+
+old_stat <- mapply(function(x, y, dof){
+            if(sum(y$CellAge == 'old') > 9 & sum(colSums(x[y$CellAge == 'old', ,drop= F]) > 1) > 1 ){
+            x <- x[y$CellAge == 'old', ,drop= F]
+            y <- y[y$CellAge == 'old', ,drop = F]
+            # compute the multinomial regression
+                    fit1 <- nnet::multinom(x ~  bs(y$pTime, df = 5), trace = FALSE )
+                    fit0 <- nnet::multinom(x ~ 1, trace = FALSE )
+            pval <- anova(fit1, fit0)$'LR stat.'[2]  
+            } else {
+              pval <- NA
+            }
+              return(pval)  
+}, x = ctab_list, y = anno_list, SIMPLIFY = FALSE )
+old_stat <- unlist2(old_stat)
+
+cor(old_stat, young_stat, use = "pairwise.complete.obs")
+
+lrt_sample_tbl <- tibble(Gene = names(old_stat), Sample_1 = old_stat, Sample_2 = young_stat)
+
+gg_lrt <- ggplot(lrt_sample_tbl, aes(x = Sample_1, y = Sample_2)) +
+  geom_pointdensity(size = .1) +
+  xlim(c(-10, 625)) + ylim(c(-10, 625)) + # exclude some outliers from the plotting
+  ggtitle('R = .86 (MNR LR Stat.)') +
+  scale_color_viridis() +
+  theme_minimal() +
+  coord_equal() +
+  scale_y_sqrt() + scale_x_sqrt() +
+  labs(colour = 'overplotting density') +
+  labs(x = 'Sample 1 (old NSCs)', y = 'Sample 2 (young NSCs)') + coord_equal() +
+  geom_abline(slope =1, colour = 'red', size = .1, intercept = 0)
+
+gg_lrt
+```
+
+> ... compute the spline regression for both samples (young + old together) for further analysis
+
+> This chunk shows the example code; results can vary (VGAM or nnet, package version, parameters), but will be highly correlated
+
+```{r mnr_splines, echo = FALSE, eval = FALSE}
+# run the multinomial regression again
+mnrg_list <- pbmapply(function(x, y, dof){
+                  #  pval <- NA # pvalue is only nominal, but tends to agree as seen in the plot before
+                    
+                                # compute the multinomial regression, try vgam
+            tried <- try(BBmisc::suppressAll( vgam(x ~ y$CellAge + bs(y$pTime, df = dof), multinomial, trace = FALSE)), silent = TRUE )
+            pval <- NA
+            if( class(tried) != 'try-error' ){
+              fit1 <- BBmisc::suppressAll( vgam(x ~ y$CellAge + bs(y$pTime, df = dof), multinomial, trace = FALSE) )
+              fit0 <- BBmisc::suppressAll( vgam(x ~ y$CellAge, multinomial, trace = FALSE) )
+              pval <- lrtest(fit1, fit0)@Body$'Pr(>Chisq)'[2] 
+              } 
+                    
+                    # back-transform to get the splines with the nnet package
+                    fit1 <- nnet::multinom(x ~  bs(y$pTime, df = dof), trace = FALSE )
+                    fit0 <- nnet::multinom(x ~ 1, trace = FALSE )
+                    m <- cbind( 1, bs( y$pTime, df = dof ) ) %*% t(coef(fit1)) 
+                    m <- exp( cbind( iso1 = 0, m ) ) 
+                    m <- m / rowSums(m)
+                    r <- cor(y$pTime, m)[1, ]
+                    colnames(m) <- seq_len(ncol(m))
+                    m  <- m[order(y$pTime), ]
+                    
+                    # for nnet
+                    #fit1 <- nnet::multinom(x ~  bs(y$pTime, df = 5), trace = FALSE )
+                    #fit0 <- nnet::multinom(x ~ 1, trace = FALSE )
+                    #pval <- anova(fit1, fit0)$'Pr(Chi)'[2] 
+                    
+              # return the values of interest
+              out <- list(p.value = pval, spline_matrix = m, pTime = y$pTime, spline_corr = r)           
+              return(out)  
+}, x = ctab_list, y = anno_list, MoreArgs = list(dof = 3), SIMPLIFY = FALSE )
+# save the result
+save(mnrg_list, file = 'mnrg_list.rda')
+```
+
+## ... compute the correlations of 3'UTR length vs. pseudotime
+
+> This represents a metric for lengthening/shortening of the 3'UTR with NSC lineage progression
+
+```{r utr_correlations, warning=FALSE, message=FALSE}
+# Run the correlation test for both samples
+
+yng_cor <- mapply(function(x, y){
+              isyoung   <- y$CellAge == 'young'
+              if( sum(isyoung) > 9 & sum(!isyoung) > 9 ){ 
+              z1 <- cor(x[isyoung], y$pTime[isyoung])
+              z2 <- cor.test(x[isyoung], y$pTime[isyoung], 'greater')$p.value
+              z3 <- cor.test(x[isyoung], y$pTime[isyoung], 'less')$p.value
+              } else {
+                z1 <-  NA; z2 <- NA; z3 <- NA
+              }
+              return(c(z1, z2, z3))  
+}, x = clen_list, y = anno_list,  SIMPLIFY = FALSE)
+
+yng_corr  <- sapply( yng_cor, function(x){ x[1] } )
+yng_test1 <- sapply( yng_cor, function(x){ x[2] } )
+yng_test2 <- sapply( yng_cor, function(x){ x[3] } )
+
+old_cor <- mapply(function(x, y){
+              isyoung   <- y$CellAge == 'old'
+              if( sum(isyoung) > 9 & sum(!isyoung) > 9 ){ 
+              z1 <- cor(x[isyoung], y$pTime[isyoung])
+              z2 <- cor.test(x[isyoung], y$pTime[isyoung], 'greater')$p.value
+              z3 <- cor.test(x[isyoung], y$pTime[isyoung], 'less')$p.value
+              } else {
+                z1 <-  NA; z2 <- NA; z3 <- NA
+              }
+              return(c(z1, z2, z3))  
+}, x = clen_list, y = anno_list,  SIMPLIFY = FALSE)
+
+old_corr  <- sapply( old_cor, function(x){ x[1] } )
+old_test1 <- sapply( old_cor, function(x){ x[2] } )
+old_test2 <- sapply( old_cor, function(x){ x[3] } )
+
+# Now, one can subset to the genes with significant (i.e. reproducible) genes
+
+sig_lng <- which(old_test1 < .1 & yng_test1 < .1) 
+length(sig_lng)
+
+sig_sht <- which(old_test2 < .1 & yng_test2 < .1) 
+length(sig_sht)
+```
+
+> These numbers do not perfectly align with those in the figure (in the paper) since these are still transcript counts (a gene can have multiple terminal exons with APA).
+
+## ... plot these correlations!
+
+```{r plot_correlations, warning=FALSE, message=FALSE, fig.width=6}
+
+# dummy vector for the 3'UTR trends
+trend <- rep(NA, times = length(apaFiltered@NAMES))
+trend[sig_sht] <- 'shorter'
+trend[sig_lng] <- 'longer'
+
+# average correlations
+corr <- mapply(function(x, y){cor(x, y$pTime) }, x = clen_list, y = anno_list,  SIMPLIFY = TRUE)
+
+# a table for plotting
+vivo_cor_tbl <- tibble(Gene = apaFiltered@NAMES,      # Gene Names
+                       UMIs = sapply(supp_list, sum),  # total UMIs
+                       Corr_Yng = yng_corr,
+                       Corr_Old = old_corr,
+                       Corr_Both = corr,  
+                       Trend = trend
+                       )
+
+# restrict genes with extremly high expression (ouliers for plotting)
+vivo_cor_tbl$UMIs[vivo_cor_tbl$UMIs > 10000] <- 10000
+
+gg_corr_ma <- ggplot(vivo_cor_tbl, aes(y = Corr_Both, x =  UMIs, colour = Trend )) +
+  geom_point( data = filter(vivo_cor_tbl, is.na(trend)), size = .95, alpha = .95) +
+  geom_point(data = filter(vivo_cor_tbl, !is.na(trend)), size = .95, alpha = .95) +
+  geom_point( data = filter(vivo_cor_tbl, !is.na(trend)), size = .95, shape = 1, color = 'black') +
+  geom_hline(yintercept = 0, col = 'black') +
+  theme_minimal() +
+  #theme(legend.position = 'top') +
+  scale_x_sqrt( breaks = scales::pretty_breaks(n = 4) ) +
+  scale_colour_manual(values = c('dodgerblue4', 'deeppink'), na.value = 'lightgrey') +
+  labs(x = 'Expression [UMIs]', y = "correlation of 3'UTR\nLength vs. pseudotime") +
+  guides(colour = FALSE)
+  
+gg_corr_ma
+
+# now, a nomial correlation test
+corr_test <- mapply(function(x, y){ cor.test(x, y$pTime)$p.value }, x = clen_list, y = anno_list,  SIMPLIFY = TRUE)
+vivo_cor_tbl$Nominal <- p.adjust( corr_test, method = 'fdr') < .1
+
+# show the agreement of both samples (whenever the correlation is nomianlly significant)
+gg_corr_rp <- ggplot(vivo_cor_tbl, aes(y = Corr_Yng, x =  Corr_Old, colour = Trend )) +
+  geom_point( data = filter(vivo_cor_tbl, is.na(trend)), size = .95, alpha = .25, color = 'darkgrey') +
+  geom_point(data = filter(vivo_cor_tbl, !is.na(trend)), size = .95, alpha = .95) +
+  geom_point( data = filter(vivo_cor_tbl, !is.na(trend)), size = .95, shape = 1, color = 'black') +
+  geom_hline(yintercept = 0, col = 'black') +
+  theme_minimal() +
+  scale_colour_manual(values = c('dodgerblue4', 'deeppink'), na.value = 'lightgrey') +
+  geom_abline(slope = 1, intercept = 0, color = 'black', size = .2) +
+  geom_hline(yintercept = 0, size = .2, alpha = .95, color = 'black') +
+  geom_vline(xintercept = 0, size = .2, alpha = .95, color = 'black') +
+  coord_equal() +
+  guides(color = FALSE) +
+  labs(x = 'Sample 1 (old NSCs)', y = 'Sample 2 (young NSCs)') 
+  
+gg_corr_rp
+
+```
+
+## ... plot 3'UTR usage for a single gene, here Pea15a!
+
+> This is an example, plotting parameters need to be adjusted for other genes
+
+```{r plot_single_gene, warning=FALSE, message=FALSE, fig.width= 11}
+# step 1: subset to the gene of interest
+y   <- anno_list$ENSMUSG0000001369
+x   <- ctab_list$ENSMUSG0000001369
+val <- colSums(x) > 9 # exclude isoforms with less than 10 UMIs
+x   <- x[ ,val ]
+ix  <- rowSums(x) > 0 # exclude cells with no counts (after rare isoform exclusion)
+y   <- y[ix, ]
+x   <- x[ix, ]
+dof <- 3 # use 3 degrees of freedom for the spline regression
+
+# step 2: compute discrete windows of pseudotime (lineage prgression)
+bins <- seq(0, max(y$pTime), by = 2.77)
+wind <- lapply( bins, function(x){ which(y$pTime > x & y$pTime < x + 2.77) } )
+wind <- wind[1:12]
+per_wind <- lapply(wind, function(x, mat){ out <- colSums( mat[x, ] ); (out/sum(out))  }, mat = x)
+tbl <- tibble( Ratio = unlist(per_wind),
+               Peaks = factor(rep(1:3, 12), levels = c('3', '2', '1')),
+               Bins = as.factor( rep(bins[1:12], each = 3)) )
+
+umi_wind <- sapply(wind, function(x, mat){ sum( mat[x, ] )  }, mat = x)
+cell_wind <- sapply(wind, function(x, mat){ sum( mat[x, ] > 0 )  }, mat = x)
+quant1 <- tibble(x = 1:12, y = 1.09, value = umi_wind)
+quant2 <- tibble(x = 1:12, y = 1.2, value = cell_wind)
+
+f1f1 <- ggplot(tbl, aes(x = Bins, y = Ratio)) +
+  geom_col(mapping = aes(fill = Peaks)) +
+  theme_minimal() +
+  scale_fill_manual(values = rev(c("deeppink", 'darkorchid3', 'dodgerblue4')) ) +
+  geom_text( data = quant1, mapping = aes(label = value, x= x, y = y), size = 3) +
+  geom_text( data = quant2, mapping = aes(label = value, x= x, y = y), size = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = 'Fraction of UMIs', x = 'pseudotime', fill = 'PAS')
+
+
+# step 3: now with the spline regression
+
+                    fit1 <- nnet::multinom(x ~  bs(y$pTime, df = dof), trace = FALSE )
+                    fit0 <- nnet::multinom(x ~ 1, trace = FALSE )
+                    m <- cbind( 1, bs( y$pTime, df = dof ) ) %*% t(coef(fit1)) 
+                    m <- exp( cbind( iso1 = 0, m ) ) 
+                    m <- m / rowSums(m)
+                    colnames(m) <- seq_len(ncol(m))
+                    m  <- m[order(y$pTime), ]
+
+peak_tbl <- tibble(Peaks      =  factor(rep(1:3, length(y$pTime)),
+                                          levels = c('3', '2', '1')),
+                   PseudoTime = rep(sort(y$pTime), each = 3),
+                   Sample     = rep(y$CellAge[order(y$pTime)], each = 3),
+                   Ratio      = unlist(apply(m, 1, list)) ) 
+
+f1f2 <- ggplot(peak_tbl, aes(x = PseudoTime,
+                     y = Ratio,
+                     fill = Peaks)) +
+                     geom_area() +
+  scale_fill_manual(values = rev(c("deeppink", 'darkorchid3', 'dodgerblue4')) ) +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = 'Fraction of UMIs', x = 'pseudotime', fill = 'PAS')
+
+# step 4: combine both plots
+f1f <- arrangeGrob(f1f1, f1f2, ncol = 1, top = 'Gene: Pea15a (gets shorter)')
+#f1f
+
+# step 5: ... plot 3'UTR length vs. pseudotime
+pa_pt_tbl <- tibble( len = clen_list$ENSMUSG0000001369, pt = anno_list$ENSMUSG0000001369$pTime )
+
+set.seed(1001) # random seed for the jitter function
+f1b1 <- ggplot(pa_pt_tbl, aes(x = pt, y = len)) + geom_jitter(size = .25, height = 100, alpha = .75) +
+  geom_smooth(method = 'lm', fill = NA, colour = 'red', size = .5) + 
+  theme_minimal() + scale_y_continuous(position = "right",
+                                       limits = c(0, 2000 )) +
+  labs(y = "3'UTR Length\n(with jitter)", x = 'pseudotime') 
+
+# step 6: ... for plotting, write the read coverage (3'peaks) into a table 
+cv         <- apaFiltered@listData$ENSMUSG0000001369@coverage
+pa_reg_tbl <- tibble(UMI_Count = cv, Position = seq_along(cv) )
+
+f1b2 <- ggplot(pa_reg_tbl) + geom_path(aes(x = Position, y = UMI_Count ), size = .25) +
+  scale_colour_manual( values = c('firebrick4', 'dodgerblue4') , na.value = 'white') +
+  theme(legend.position = 'bottom', panel.background = element_rect(fill = "white", colour ="white")) +
+  coord_flip() + scale_y_reverse( ) + xlim(c(0, 2000)) + labs(x = "3'UTR Length", y = 'UMI Count')
+
+# ... combine both plots
+f1b <- arrangeGrob(f1b2, f1b1, ncol = 2, top = 'Gene: Pea15a (gets shorter)')
+#f1b
+
+# ... eventually, combine all four plots!
+grid.arrange(f1b, f1f, ncol = 2)
+```
+
+## Compute a quality control as position of annotated 3'UTR ends and the polyadenylation signal (PAS)
+
+```{r qc_plots, warning=FALSE, message=FALSE, fig.height= 4}
+## meta-peak from Ensembl
+ldx           <- vivoFiltered@Sequence$Length > 99  # exclude very short UTRs
+metaend      <- mapply(function(x, y){ 
+   distal    <- x[ (y - 100):(y + 24)  ]
+   ifelse(any(distal > 0), which.max(distal), NA)
+   }, x = get_mfsc(vivoFiltered, 'coverage')[ldx],
+  y = vivoFiltered@Sequence$Length[ldx])
+
+metapeak <- tabulate(metaend, nbins = 125) # tabulate
+
+shift_tbl <- tibble(n_peaks_distal = metapeak,
+                    MetaPosition = (-99):(25))
+# plot it
+gg_dist_ensembl <- ggplot(shift_tbl, aes(y = n_peaks_distal, x = MetaPosition) ) +
+   theme_classic() + geom_col(fill = 'firebrick4', alpha = .1 ) + 
+   geom_smooth(method = 'loess', span = .02, se = FALSE, size = .2, colour = 'firebrick4') +
+   labs(x = "Meta Position [bp] (1 = 3'UTR End, Ensembl)" ) +
+   scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+   theme(legend.position = 'bottom')   
+
+# meta-peak from the Hexamer
+distHex      <- mapply(function(x, y){ 
+      hexPos <- gregexpr('AATAAA', y)[[1]] %>% as.vector()
+      hexPos <- hexPos[hexPos > 100]
+      cov    <- tabulate(x@peaks[x@support > 1]) 
+      if(length(hexPos) > 0){
+      out    <- lapply( hexPos, function(x, y){ y[ (x - 100):(x + 100) ] }, y = cov) 
+      } else {
+        out <- NULL
+      }
+      return(out) 
+   }, y = vivoFiltered@Sequence$Seqeuence, x = vivoFiltered@listData) %>% unname()
+
+distHex <- distHex[!sapply(distHex, is.null)  ] #%>% unlist2( ,de)
+distHex <- unlist(distHex, recursive = F)
+distHex <- do.call('rbind', distHex) 
+distHex <- apply(distHex, 1, function(x){ ( x/sum(x)*201 ) })
+distHex  <- rowSums(distHex, na.rm = T) 
+
+shift_tbl <- tibble(n_peaks = distHex,
+                    MetaPosition = (-100):(100))
+
+gg_hex_pos <- ggplot(shift_tbl, aes(y = n_peaks, x = MetaPosition) ) +
+   theme_classic() + geom_col(fill = 'dodgerblue4', alpha = .1 ) +
+   geom_smooth(method = 'loess', span = .01, se = FALSE, size = .2, colour = 'dodgerblue4') +
+   labs(x = "Meta Position [bp] (1 = AAUAAA)" ) +
+   scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+   theme(legend.position = 'bottom')   
+
+grid.arrange(gg_dist_ensembl, gg_hex_pos, ncol = 2, top = 'Quality Control')
+
+```
+
+## Perform gene set enrichment analysis using the multinomial regression score (Gene Ontology - GO and disease ontology - DO)
+
+> This chunk shows the example code; results will vary with the random seed and the version of the annotation packages
+
+```{r gsea_compute,eval = FALSE}
+
+score <- (old_stat + young_stat)/2
+names(score) <- eff_tbl$Genes
+score <- sort(score, decreasing = TRUE)
+str(score)
+
+set.seed(101)
+require(clusterProfiler)
+require(org.Mm.eg.db)
+gsl <- gseGO(geneList = score, ont = 'BP', OrgDb = 'org.Mm.eg.db', keyType = "ENSEMBL", pvalueCutoff = 0.1, nPerm = 25000, minGSSize = 20)
+gsl@result
+
+
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+score_h <- getLDS(attributes = c("ensembl_gene_id"),
+                  filters = "ensembl_gene_id", values = names(score),
+                  mart = mouse, attributesL = c("entrezgene_id"),
+                  martL = human, uniqueRows=T)#[ ,2]
+str(score_h)
+
+
+anyDuplicated(score_h$Gene.stable.ID)
+score_ <- score[score_h$Gene.stable.ID]
+names(score_) <- as.character(score_h$NCBI.gene.ID)
+score_ <- sort(score_, decreasing = TRUE)
+
+set.seed(101)
+do <- gseDO(score_, minGSSize = 20, pvalueCutoff = .05,  nPerm = 10000)
+do@result$Description
+do_ <- do@result[c(1,2,6, 16, 46), ]
+
+set.seed(101)
+dgn <- gseDGN(score_, minGSSize = 20, pvalueCutoff = .05, nPerm = 10000 )
+dgn@result
+```
+
+```{r gesa_plot, warning=FALSE, message=FALSE, fig.height= 4}
+# Load the precompiled result
+load(file = 'gsea_vivo.rda')
+
+f1g <- ggplot( gsl_sub, aes(y = setSize, x = Description, fill = NES ) ) +
+           geom_col() + coord_flip() + ggtitle('Gene Ontology (GO)') +
+           theme_minimal() +
+           labs(x = '', y = 'Size of Gene Sets') +
+           scale_fill_gradientn( colors = c('dodgerblue1', 'dodgerblue4', 'black') ) 
+# GSEA (Rank by Lengthening), FDR < 10%
+f1g
+
+do_ <- mutate(do_, Description = factor(Description, levels = (Description)[order(NES)]  ) )
+f1h1 <- ggplot( do_, aes(y = setSize, x = Description, fill = NES ) ) +
+        geom_col() + coord_flip() +
+        ggtitle("Disease Ontology (DO)") + theme_minimal() +
+        labs(x = '', y = 'Size of Gene Sets') +
+        scale_fill_gradientn( colors = c('darkorchid1', 'darkorchid2', 'darkorchid3', 'darkorchid4', 'black') ) +
+        theme(legend.position = 'bottom')
+#f1h1
+
+dgn_ <- mutate(dgn_, Description = factor(Description, levels = (Description)[order(NES)]  ) )
+f1h2 <- ggplot( dgn_, aes(y = setSize, x = Description, fill = NES ) ) +
+        geom_col() + coord_flip() +
+        ggtitle("Disease Gene Network (DGN)") + theme_minimal() +
+        labs(x = '', y = 'Size of Gene Sets') +
+        scale_fill_gradientn( colors = c('aquamarine3', 'aquamarine4', 'black') ) +
+        theme(legend.position = 'bottom')
+#f1h2
+grid.arrange(f1h1, f1h2, ncol = 2, top = 'GSEA (Rank by Regression Score)', widths = c(4, 3))
+
+```
+
+## Identification of CPE-flanked isoforms and their usage along the neural stem cell lineage
+
+> This chunk shows the example code
+
+```{r cpe_compute, eval = FALSE}
+
+nom_th <- p.adjust( sapply(mnrg_list, function(x){ x$p.value }), method = 'fdr') < .01
+
+cpe_cnt <- mapply(function(x, y, z, s){ 
+  m <- 'TTTTGT|TTTTGAT|TTTTAGT'
+  loc <- (str_locate_all(y, m)[[1]][ ,1])
+  pos <- sapply(z, function(x, loc){ any(x - loc > 5 & x - loc < 55) }, loc)
+  th <- s > 149 
+  pt   <- sort(x$pTime)
+  corr <- apply(x$spline_matrix, 2, function(x){
+             cor(x[pt < 21], pt[pt < 21] ) } ) 
+  
+  pce <- corr[which(pos & th)]
+  ncpe <- corr[which(!pos & th)]
+  if( any(th) ){
+    return(list( Positive = pce[1], Negative = ncpe[1] ))
+  } else {
+    return(NULL)
+  }
+  },
+  y = apaFiltered@Sequence$Seqeuence, s = supp_list,
+  x = mnrg_list, z = peak_list, SIMPLIFY = FALSE
+  ) %>% unname()
+
+anyPos <- lapply( cpe_cnt, function(x){ is.numeric(x$Positive) &
+                                        length(x$Positive) > 0 } ) %>% unlist2()
+
+pos <- lapply( cpe_cnt, function(x){ x$Positive } )[nom_th & anyPos] %>% unlist2()
+neg <- lapply( cpe_cnt, function(x){ x$Negative } )[nom_th & anyPos] %>% unlist2()
+pos <- pos[!is.na(pos)]
+neg <- neg[!is.na(neg)]
+str(pos)
+str(neg)
+boxplot(pos, neg)
+wilcox.test(pos, neg)
+cpe_cor_tbl1 <- tibble( Cor = c(pos, neg),
+               Peak = c( rep('CPE', length(pos)), rep('No CPE', length(neg)) ),
+               Transition = 'qNSCs to aNSCs')
+
+cpe_cnt <- mapply(function(x, y, z, s){ 
+  m <- 'TTTTGT|TTTTGAT|TTTTAGT'
+  loc <- (str_locate_all(y, m)[[1]][ ,1])
+  pos <- sapply(z, function(x, loc){ any(x - loc > 5 & x - loc < 55) }, loc)
+  th <- s > 149
+  pt   <- sort(x$pTime)
+  corr <- apply(x$spline_matrix, 2, function(x){
+             cor(x[pt > 22], pt[pt > 22] ) } ) 
+  
+  pce <- corr[which(pos & th)]
+  ncpe <- corr[which(!pos & th)]
+  if( any(th) ){
+    return(list( Positive = pce[1], Negative = ncpe[1] ))
+  } else {
+    return(NULL)
+  }
+  },
+  y = apaFiltered@Sequence$Seqeuence, s = supp_list,
+  x = mnrg_list, z = peak_list, SIMPLIFY = FALSE
+  ) %>% unname()
+
+pos <- lapply( cpe_cnt, function(x){ x$Positive } )[nom_th & anyPos] %>% unlist2()
+neg <- lapply( cpe_cnt, function(x){ x$Negative } )[nom_th & anyPos] %>% unlist2()
+boxplot(pos, neg)
+wilcox.test(pos, neg)
+pos <- pos[!is.na(pos)]
+neg <- neg[!is.na(neg)]
+str(pos)
+str(neg)
+
+cpe_cor_tbl2 <- tibble( Cor = c(pos, neg),
+               Peak = c( rep('CPE', length(pos)), rep('No CPE', length(neg)) ),
+               Transition = 'aNSCs to NBs')
+
+cpe_cor_tbl <- rbind(cpe_cor_tbl1, cpe_cor_tbl2) %>% as_tibble()
+```
+
+```{r cpe_plot, eval = TRUE,warning=FALSE, message=FALSE}
+# Load the precompiled result
+load(file = 'cpe_cor_tbl.rda')
+
+cpe_cor_tbl$Transition <- factor(cpe_cor_tbl$Transition,
+                                 levels = c('qNSCs to aNSCs', 'aNSCs to NBs'))
+# Interaction test
+t1 <- lm(Cor ~ Peak + Transition + Peak*Transition, data = cpe_cor_tbl)
+t2 <- lm(Cor ~ Peak + Transition, data = cpe_cor_tbl)
+anova(t1, t2, test = 'Chisq')
+# 1.28e-05 ***
+
+# ... or a non-parametric test
+wilcox.test( filter(cpe_cor_tbl, Transition == 'qNSCs to aNSCs' & Peak == "CPE"  )$Cor,
+             filter(cpe_cor_tbl, Transition == 'qNSCs to aNSCs' & Peak == "No CPE")$Cor  )
+
+wilcox.test( filter(cpe_cor_tbl, Transition == 'aNSCs to NBs' & Peak == "CPE"  )$Cor,
+             filter(cpe_cor_tbl, Transition == 'aNSCs to NBs' & Peak == "No CPE")$Cor  )
+
+gg_cpe_trend <- ggplot(cpe_cor_tbl, aes(y = Cor, x = Transition, color = Peak)) +
+     geom_violin(mapping = aes(fill = Peak), alpha = .3) +
+     geom_boxplot(width = .15, mapping = aes(fill = Peak), color = 'black' ) +
+     theme_classic() +
+     facet_grid(Peak~.) +
+  scale_color_manual(values = c('red', 'black')) +
+  scale_fill_manual(values = c('red', 'darkgrey')) +
+  geom_hline(yintercept = 0, alpha = .5, size = 0.25) +
+  guides(color = FALSE, fill = FALSE) +
+  labs(x = 'color code: CPE Motif (from e)\n upstream of PAS (1 to 50 bp)',
+       y = 'Usage of PAS vs. pseudotime\nincrease (> 0) or decrease(< 0)') +
+  ggtitle('p-value < 0.001')
+
+gg_cpe_trend
+```
+
+## End
+
+```{r info}
+sessionInfo()
+```
+
+
+
+```{r, include = FALSE, eval = FALSE}
+# up-load to github
+
+save(cpe_cor_tbl, file = 'cpe_cor_tbl.rda')
+save(gsl_sub, do_, dgn_, file = 'gsea_vivo.rda')
+
+```
+
