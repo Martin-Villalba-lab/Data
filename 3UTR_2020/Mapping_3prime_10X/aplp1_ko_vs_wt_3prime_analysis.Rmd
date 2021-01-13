@@ -1,0 +1,568 @@
+---
+title: "Aplp1_Analysis"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+> Analysis of 3'UTR usage in neural stem cells of the subventricular zone (Preprint: Goepferich & George et al. 2020)
+
+Final plots in the paper may differ slightly due to:
+
+* figures are not in order as in the paper (due to the intrinsic logic of this script and the input data)
+* changes pending on the peer-review process
+* collecting and final editing of sub-plots in Adobe Illustrator
+* differences R package versions or other parameters
+
+> Note: This is a reporting file providing all the necessary programming code to comprehend the main results of the paper.
+
+> Note: Precompield files are provided in this directory.
+
+```{r package-options, include=FALSE}
+knitr::opts_knit$set(warning=FALSE, fig.width=8, fig.height=8)  
+```
+
+> Note: Computed as HTML-File
+
+## Downstream Analysis of in-vivo 3'UTRs (APLP1 KO + WT)
+
+```{r packages_s4, echo = FALSE, message = FALSE, warning = FALSE}
+# load packages and set S4 class
+require(tidyverse)
+require(GenomicRanges)
+require(stringr)
+require(splines)
+require(nnet)
+require(pbapply)
+require(AnnotationDbi)
+require(ggpointdensity)
+require(viridis)
+require(gridExtra)
+require(ggrepel)
+
+MFSCpeakList <- setClass("MFSCpeakList",
+                      slots = list(
+                        NAMES    = 'character',
+                        Ranges   = 'GRanges',
+                        Sequence = 'tbl_df',
+                        listData = 'list',
+                        metadata = 'tbl_df'
+                      ))
+
+MFSCpeak <- setClass("MFSCpeak",
+                      slots = list(
+                        features   = 'integer',   
+                        support    = 'integer',    
+                        peaks      = 'integer',
+                        coverage   = 'integer',
+                        partition  = 'factor',
+                        cellMean   = 'numeric',
+                        cellIdx    = 'integer',
+                        counts     = 'matrix'
+                      ))
+
+get_mfsc          <- function(x, what = 'features'){ lapply(x@listData, function(x, y){ slot(x, y) }, y = what) }
+get_annotation    <- function(x){ lapply(x@listData, function(x, y){ y[x@cellIdx, ] }, y = x@metadata) }
+
+setMethod('[', signature = c('MFSCpeakList', 'logical', 'missing', 'missing') , definition = function(x, i){
+          x@listData <- x@listData[i]; x@NAMES <- x@NAMES[i]; x@Ranges <- x@Ranges[i]; x@Sequence <- x@Sequence[i, ]; return(x) } )
+```
+
+## ... load the previously created 3'mapping file 
+
+```{r input_data}
+# load the stored 3'UTR object
+load(file = '/Volumes/g381-daten2/goepferich/3UTR_REANALYSIS_2019/aplp1_downstream/aplp1Filtered.rda')
+```
+
+## ... some basic metrices & 3'tail-peak analysis
+
+```{r apa_subset}
+length( aplp1Filtered@NAMES ) # number of exons
+length( unique( names(aplp1Filtered@NAMES ) ) ) # number of genes
+sum( tapply(aplp1Filtered@NAMES, names(aplp1Filtered@NAMES), length ) > 1 ) # number of genes with multiple exons (used)
+
+apa <- get_mfsc(aplp1Filtered, 'features' ) %>% unlist()
+apa <- apa > 1
+table(apa) # TRUE, exons with APA events
+
+# subset to genes with only (potentially) APA events
+apaFiltered <- aplp1Filtered[apa]
+```
+
+## ... create some nice lists with the S4 approach
+
+> These lists are required for the transcript-by-transcript approach
+
+```{r transcript_wise_data}
+# create lists of the required input-values
+ctab_list <- get_mfsc(apaFiltered, 'counts')
+clen_list <- get_mfsc(apaFiltered, 'cellMean')
+peak_list <- get_mfsc(apaFiltered, 'peaks')
+supp_list <- get_mfsc(apaFiltered, 'support')
+anno_list <- get_annotation(apaFiltered)
+
+# The list of isoform count tables!
+str( head(ctab_list, n = 2) )
+
+# The list of 3'UTR lengths!
+str( head(clen_list, n = 2) )
+
+# The list of matched cell annotations
+str( head(anno_list, n = 2) )
+```
+
+## ... multinomial regression analysis with the 'nnet' package
+
+> Test for differential 3'UTR usage (APLP1-/- vs. WT) --> LRT-statistic
+
+> The hypothesis is that 3'UTR isoform choice depends on the genotype
+
+```{r mnr_statistics, warning=FALSE, message=FALSE}
+
+# apply multinomial regression
+pbulk_pval <- pbmapply(function(x, y, dof){
+                    ko_th   <- colSums(x[y$Genotype == 'KO', ,drop = F] > 0) > 2 # pseudo-bulk over Aplp1-KOs
+                    wt_th   <- colSums(x[y$Genotype == 'WT', ,drop = F] > 0) > 2 # pseudo-bulk over WTs
+                    use_apa <- ko_th | wt_th  
+                    x       <- x[ ,use_apa, drop = FALSE]
+                    if( sum(use_apa) > 1 & sum(y$Genotype == 'KO') > 9 & sum(y$Genotype == 'WT') > 9 ){
+                    x_ <- rowsum(x, group = paste(y$Genotype, y$Replicate) )  
+                    if( all(rowSums(x_) > 2) ){
+                    fit1 <- nnet::multinom(x_ ~ str_split(rownames(x_), '', simplify = TRUE)[ ,1] , trace = FALSE )
+                    fit0 <- nnet::multinom(x_ ~ 1, trace = FALSE )
+                    pval <- anova(fit1, fit0)$'Pr(Chi)'[2]    
+                    } else {
+                      pval <- NA
+                    }
+                    } else {
+                      pval <- NA
+                    }
+                    return(pval)  
+}, x = ctab_list, y = anno_list, SIMPLIFY = TRUE ) 
+
+# p-value (MNR): effect of the genotype on 3'UTR usage
+str( head(pbulk_pval, n = 5) )
+
+# select the genes (by index) after FDR correction
+sel <- which(p.adjust(pbulk_pval, method = 'fdr') < .05) 
+```
+
+## ... comparison of the pseudotime density (average lineage progression state) between genotypes
+
+```{r}
+ggplot(aplp1Filtered@metadata, aes(pTime, fill = Genotype)) + geom_density(alpha = 0.5) + theme_minimal()
+```
+
+## ... the Earth Mover's Distance (EMD) - a mesaure for differential 3'UTR usage between both genotypes
+
+```{r diff_utr_usage_emd, warning=FALSE, message=FALSE}
+emd <- mapply(function(x, y){ 
+      ko   <- colSums(x[y$Genotype == 'KO' , ,drop = F]) 
+      wt   <- colSums(x[y$Genotype == 'WT' , ,drop = F]) 
+      wt_norm <- wt/sum(wt)
+      ko_norm <- ko/sum(ko)
+      emd <- sum( cumsum( wt_norm - ko_norm ) )
+      return(emd)
+  }, x = ctab_list, y = anno_list, SIMPLIFY = TRUE ) #%>% log2()
+
+# Earth Mover's Distance, a metric fot effect of the genotype
+str( head(pbulk_pval, n = 5) )
+
+```
+
+## ... plot these results!
+
+```{r plot_genotype_utr, warning=FALSE, message=FALSE, fig.width=6}
+
+trend <- rep('n.s.', times = length(emd))
+trend[sel] <- 'MNR < FDR 5%'
+
+aputr_tbl <- tibble(Expression = sapply(supp_list, sum),
+                    EMD = emd,
+                    Trend = trend,
+                    Gene = apaFiltered@NAMES)
+
+aputr_tbl$Expression[aputr_tbl$Expression > 5000] <- 5000 # restrict genes with extremely high expression (outliers)
+table(aputr_tbl$Trend)
+
+# mark some selected genes
+selected <- c('ENSMUSG00000098754', 'ENSMUSG00000024109', 'ENSMUSG00000022285',
+              'ENSMUSG00000024146', 'ENSMUSG00000094483', 'ENSMUSG00000069769' )
+              # Prn,  Nrxn1, Ywhaz, Cript, Purb, Msi2
+
+gg_ma_geno <- ggplot(aputr_tbl, aes(y = EMD, x =  Expression, colour = Trend, label = Gene )) +
+  geom_point( data = filter(aputr_tbl, Expression == 5000 ), size = .75, shape = 23) +
+  geom_point( data = filter(aputr_tbl, Trend == 'n.s.' ), color = 'lightgrey') +
+  geom_point( data = filter(aputr_tbl, Trend == 'MNR < FDR 5%' ), color = 'firebrick4') +
+  geom_point( data = filter(aputr_tbl, Trend == 'MNR < FDR 5%' ), shape = 1) +
+  geom_text_repel(colour = 'black', 
+                  nudge_x = 1,
+                  force = 1,
+                  box.padding = 1,
+                  segment.alpha = .5,
+                  data = filter(aputr_tbl, Gene %in% selected),
+                  mapping = aes(label = c('Prn', 'Purb', 'Msi2', 'Ywhaz', 'Cript', 'Nrxn1') )
+                  ) +
+  geom_hline(yintercept = 0, col = 'black') +
+  theme_minimal() + theme(legend.position = 'top') +
+  scale_x_sqrt( breaks = scales::pretty_breaks(n = 3) ) +
+  scale_colour_manual(values = c( 'black', 'black'), na.value = 'lightgrey') +
+  labs(x = 'Expression [UMIs]', caption = '*red points = FDR < 5%\nGenotype Effect',
+       y = "3'UTR PAS Usage\n(EMD) APLP1-/- vs. WT") +
+  guides(colour = FALSE)
+  
+gg_ma_geno
+
+```
+
+## Gene Ontology and Disease Ontology analysis (Genotype effect on 3'UTR usage)
+
+> This chunk shows the example code; results will vary with the random seed and the version of the annotation packages
+
+```{r gene_set_enrichment, eval = FALSE}
+
+# This time compute the LRT statistic
+lrt <- pbmapply(function(x, y, dof){
+                    ko_th   <- colSums(x[y$Genotype == 'KO', ,drop = F] > 0) > 0 
+                    wt_th   <- colSums(x[y$Genotype == 'WT', ,drop = F] > 0) > 0 
+                    use_apa <- ko_th | wt_th  
+                    x       <- x[ ,use_apa, drop = FALSE]
+                    if( sum(use_apa) > 1 & sum(y$Genotype == 'KO') > 0 & sum(y$Genotype == 'WT') > 0 ){
+                    x_ <- rowsum(x, group = paste(y$Genotype, y$Replicate) )  
+                    if( all(rowSums(x_) > 0) ){
+                    fit1 <- nnet::multinom(x_ ~ str_split(rownames(x_), '', simplify = TRUE)[ ,1] , trace = FALSE )
+                    fit0 <- nnet::multinom(x_ ~ 1, trace = FALSE )
+                    pval <- anova(fit1, fit0)$'LR stat.'[2] # test for differential 3'UTR usage (genotype effect)   
+                    } else {
+                      pval <- NA
+                    }
+                    } else {
+                      pval <- NA
+                    }
+                    return(pval)  
+}, x = ctab_list, y = anno_list, SIMPLIFY = TRUE ) 
+
+score <- lrt # use it as a score to rank the genes for the GSEA method
+names(score) <- str_split(names(score), '_', simplify = TRUE)[ ,1]
+head(score)
+
+# run the GSEA method
+set.seed(1001)
+cc_res <-  gseGO( sort( abs(score), decreasing = T),
+                          keyType =  'ENSEMBL', OrgDb = 'org.Mm.eg.db',
+                          ont = 'CC', nPerm = 1e4,
+                    pvalueCutoff = 1,  minGSSize = 75, maxGSSize = 750) 
+str(cc_res@result)
+
+# tranlsate into human ENTREZ identifier
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+score_h <- getLDS(attributes = c("ensembl_gene_id"), filters = "ensembl_gene_id", values = names(score),
+                  mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
+
+# run the disease ontology analysis (DO) as for the in vivo analysis (data from kalamakis et al. 2019)
+
+```
+
+> ... Disease Ontology
+
+```{r DO, fig.height=2.5}
+load(file = 'gsea_aplp1.rda') # pre-compiled results
+do_sub   <- mutate(do_sub, Description = factor(Description, levels = (Description)[order(NES)]  ) )
+ggplot( do_sub, aes(y = setSize, x = Description, fill = NES ) ) + geom_col() + coord_flip() +
+            ggtitle("GSEA (Rank by APLP1-/- vs. WT \n3'UTR Change LR Stat., FDR < 10%)") +
+            theme_minimal() +
+            labs(x = '', y = 'Size of Gene Sets') +
+            scale_fill_gradientn( colors = c('darkorchid1', 'darkorchid2', 'darkorchid3', 'darkorchid4', 'black') ) +
+            ggtitle('Disease Ontology (DO)')
+
+```
+
+> ... now Gene Ontology
+
+```{r GO, fig.height=3}
+lsl_sub   <- mutate(lsl_sub, Description = factor(Description, levels = (Description)[order(NES)]  ) )
+ggplot( lsl_sub, aes(y = setSize, x = Description, fill = NES ) ) + geom_col() + coord_flip() +
+             ggtitle("GSEA (Rank by longer 3'UTR\nAPLP1-/- vs. WT), FDR < 10%") + theme_minimal() +
+             labs(x = '', y = 'Size of Gene Sets') +
+             scale_fill_gradient(low = 'dodgerblue4', high = 'black') #+
+```
+
+> ... intersection (of APLP1-/- affected genes) with CPEB4 and CPEB1 binders from Parras et al. 2018 
+
+> HYPOTHESIS: APLP1 acts through CPEB4, thereby modulating 3'UTR usage
+             
+```{r parras_cpeb4_binders, fig.width=4, warning=FALSE, message=FALSE}
+             
+ggplot(rip_aplp1_tbl, aes(y = GeneRatio, x = GeneSet, fill = Binding)) +
+  theme_minimal() +
+  scale_fill_manual(values = c('darkorchid4', 'firebrick4', 'red' , 'grey') ) + #'dodgerblue', 
+  scale_y_continuous(labels = scales::percent) + 
+  geom_col(color = 'black') +
+  ggtitle('p-value < 0.001') +
+  labs(subtitle = 'RIP (Parras et al. 2018)',
+       y = "Gene Ratio [%]", x = "p-value" )
+
+```
+
+## Identification of CPE-flanked isoforms and their usage along the neural stem cell lineage (APLP1-/- vs. WT)
+
+> This chunks show the example code
+
+> Example 1: ... again MNR-splines in APLP1-WT
+
+```{r compute_spline_example, warning=FALSE, message=FALSE}
+
+# compute MNR-splines (here for APLP1-/- as example)
+mnrg_list_wt <- pbmapply(function(x, y, dof){
+            # compute the multinomial regression, try vgam
+            if( length(y$Genotype == 'WT') > 49 & sum(( colSums( x[y$Genotype == 'WT', ,drop = FALSE]) ) > 2) > 1 ){
+              x <- x[y$Genotype == 'WT', ]
+              y <- y[y$Genotype == 'WT', ]
+                    # back-transform to get the splines with the nnet package
+                    fit1 <- nnet::multinom(x ~  bs(y$pTime, df = dof), trace = FALSE )
+                    fit0 <- nnet::multinom(x ~ 1, trace = FALSE )
+                    m <- cbind( 1, bs( y$pTime, df = dof ) ) %*% t(coef(fit1)) 
+                    m <- exp( cbind( iso1 = 0, m ) ) 
+                    m <- m / rowSums(m)
+                    r <- cor(y$pTime, m)[1, ]
+                    colnames(m) <- seq_len(ncol(m))
+                    m  <- m[order(y$pTime), ]
+                    
+              # return the values of interest
+              out <- list(spline_matrix = m, pTime = y$pTime, spline_corr = r)   
+            } else {
+              return(NA)
+            }
+              return(out)  
+}, x = ctab_list, y = anno_list, MoreArgs = list(dof = 3), SIMPLIFY = FALSE )
+
+```
+
+> Example 2: ... effect for CPE-flanked PASs
+
+```{r cpe_compute, eval = FALSE}
+
+ix <- sapply(mnrg_list_wt, class) != 'logical'
+
+cpe_wt <- mapply(function(x, y, z, s){ 
+  m <- 'TTTTGT|TTTTGAT|TTTTAGT'
+  loc <- (str_locate_all(y, m)[[1]][ ,1])
+  pos <- sapply(z, function(x, loc){ any(x - loc > 5 & x - loc < 55) }, loc)
+  th <- s > 79 
+  pt   <- sort(x$pTime)
+  corr <- apply(x$spline_matrix, 2, function(x){
+             cor(x[pt > 2.5], pt[pt > 2.5] ) } ) # This is for the aNSC to NB transition
+  
+  pce <- corr[which(pos & th)]
+  ncpe <- corr[which(!pos & th)]
+  if( any(th) ){
+    return(list( Positive = pce[1], Negative = ncpe[1] ))
+  } else {
+    return(NULL)
+  }
+  },
+  y = apaFiltered@Sequence$Seqeuence[ix], s = supp_list[ix],
+  x = mnrg_list_wt[ix], z = peak_list[ix], SIMPLIFY = FALSE
+  ) %>% unname()
+
+anyPos <- lapply( cpe_wt, function(x){ is.numeric(x$Positive) &
+                                        length(x$Positive) > 0 } ) %>% unlist2()
+
+pos <- lapply( cpe_wt, function(x){ x$Positive } )[ anyPos] %>% unlist2()
+neg <- lapply( cpe_wt, function(x){ x$Negative } )[ anyPos] %>% unlist2()
+pos <- pos[!is.na(pos)]
+neg <- neg[!is.na(neg)]
+
+ix <- sapply(mnrg_list_ko, class) != 'logical'
+
+cpe_ko <- mapply(function(x, y, z, s){ 
+  m <- 'TTTTGT|TTTTGAT|TTTTAGT'
+  loc <- (str_locate_all(y, m)[[1]][ ,1])
+  pos <- sapply(z, function(x, loc){ any(x - loc > 5 & x - loc < 55) }, loc)
+  th <- s > 79 
+  pt   <- sort(x$pTime)
+  corr <- apply(x$spline_matrix, 2, function(x){
+             cor(x[pt > 2.5], pt[pt > 2.5] ) } ) 
+  
+  pce <- corr[which(pos & th)]
+  ncpe <- corr[which(!pos & th)]
+  if( any(th) ){
+    return(list( Positive = pce[1], Negative = ncpe[1] ))
+  } else {
+    return(NULL)
+  }
+  },
+  y = apaFiltered@Sequence$Seqeuence[ix], s = supp_list[ix],
+  x = mnrg_list_ko[ix], z = peak_list[ix], SIMPLIFY = FALSE
+  ) %>% unname()
+
+anyPos <- lapply( cpe_ko, function(x){ is.numeric(x$Positive) &
+                                        length(x$Positive) > 0 } ) %>% unlist2()
+
+pos_ <- lapply( cpe_ko, function(x){ x$Positive } )[ anyPos] %>% unlist2()
+neg_ <- lapply( cpe_ko, function(x){ x$Negative } )[ anyPos] %>% unlist2()
+pos_ <- pos[!is.na(pos_)]
+neg_ <- neg[!is.na(neg_)]
+
+cpe_cor_tbl_aplp_nb <- tibble( Cor = c(pos, neg, pos_, neg_),
+               Peak = c( rep('CPE', length(pos)), rep('No CPE', length(neg)),
+                         rep('CPE', length(pos_)), rep('No CPE', length(neg_)) ),
+               Genotype = c( rep('WT', length(c(pos, neg)) ), rep('APLP1-/-', length(c(pos_, neg_)) ) ) 
+               )
+```
+
+> Usage of CPE-flanked PAS (APLP1-/- vs. WT, compare to the WT from Kalamakis et al. 2019)
+
+```{r cpe_plot, fig.width = 6, fig.height=4, eval = TRUE,warning=FALSE, message=FALSE}
+load(file = 'cpe_cor_tbl_aplp.rda')
+cpe_cor_tbl_aplp$Genotype <- factor(cpe_cor_tbl_aplp$Genotype,
+                                 levels = c('WT', 'APLP1-/-'))
+
+fit1 <- glm(Cor ~ Peak + Genotype + Peak:Genotype, data = cpe_cor_tbl_aplp)
+fit0 <- glm(Cor ~ Peak + Genotype, data = cpe_cor_tbl_aplp)
+anova(fit1, fit0, test = 'Chisq')
+
+wt <- filter(cpe_cor_tbl_aplp, Genotype == "WT" & Peak == "CPE")$Cor
+ko <- filter(cpe_cor_tbl_aplp, Genotype == "APLP1-/-" & Peak == "CPE")$Cor
+wilcox.test(ko, wt)
+
+gg_cpe_trend <- ggplot(cpe_cor_tbl_aplp, aes(y = Cor, x = Genotype, color = Peak)) +
+     geom_violin(mapping = aes(fill = Peak), alpha = .3) +
+     geom_boxplot(width = .15, mapping = aes(fill = Peak), color = 'black' ) +
+     theme_classic() +
+     facet_grid(Peak~.) +
+  scale_color_manual(values = c('firebrick4', 'black')) +
+  scale_fill_manual(values = c('red', 'darkgrey')) +
+  geom_hline(yintercept = 0, alpha = .5, size = 0.25) +
+  guides(color = FALSE, fill = FALSE) +
+  labs(x = 'color code: as in Fig.2 e)\n Transition: qNSCs to aNSCs',
+       y = 'Usage of PAS vs. pseudotime\nincrease (> 0) or decrease(< 0)') +
+  ggtitle('p-value = 0.04')
+
+gg_cpe_trend
+```
+
+> ... fo the second transition (not evaluated in this script)
+
+```{r cpe_plot_nb, eval = FALSE,warning=FALSE, message=FALSE}
+cpe_cor_tbl_aplp_nb$Genotype <- factor(cpe_cor_tbl_aplp_nb$Genotype,
+                                 levels = c('WT', 'APLP1-/-'))
+
+fit1 <- glm(Cor ~ Peak + Genotype + Peak:Genotype, data = cpe_cor_tbl_aplp_nb)
+fit0 <- glm(Cor ~ Peak + Genotype, data = cpe_cor_tbl_aplp_nb)
+anova(fit1, fit0, test = 'Chisq')
+
+wt <- filter(cpe_cor_tbl_aplp_nb, Genotype == "WT" & Peak == "CPE")$Cor
+ko <- filter(cpe_cor_tbl_aplp_nb, Genotype == "APLP1-/-" & Peak == "CPE")$Cor
+wilcox.test(ko, wt)
+
+gg_cpe_trend <- ggplot(cpe_cor_tbl_aplp_nb, aes(y = Cor, x = Genotype, color = Peak)) +
+     geom_violin(mapping = aes(fill = Peak), alpha = .3) +
+     geom_boxplot(width = .15, mapping = aes(fill = Peak), color = 'black' ) +
+     theme_classic() +
+     facet_grid(Peak~.) +
+  scale_color_manual(values = c('firebrick4', 'black')) +
+  scale_fill_manual(values = c('red', 'darkgrey')) +
+  geom_hline(yintercept = 0, alpha = .5, size = 0.25) +
+  guides(color = FALSE, fill = FALSE) +
+  labs(x = 'Transition: aNSCs to NBs',
+       y = 'PAS Usage along the NSC lineage\nincrease (> 0) or decrease(< 0)') +
+  ggtitle('p-value = 0.04')
+
+gg_cpe_trend
+```
+
+## ... one can compare the differential 3'UTR usage in APLP1-/- (mouse) vs. the autism cohort (human)
+
+> This table contains some matched statistics and annotations of both analyses.
+
+```{r matched species, eval = TRUE,warning=FALSE, message=FALSE}
+load(file = 'cross_new_master.rda')
+
+cross_new_master
+
+colnames(cross_new_master)
+```
+
+> 'Genes' are human Entrez IDs, 'Len' is the length of the 3'UTR sequence (from the gene annotation)
+
+> First, genes will be matched (in addition to the gene name) by the 3'UTR length
+
+(IDEA: Then the 3'UTRs are conserved between mouse and human, alternatively one could try sequence alignment --> homology score)
+
+```{r plot_macthed_species, eval = TRUE,warning=FALSE, message=FALSE}
+f4z1 <- ggplot(cross_new_master,
+               aes(x = Human_Len,
+                   y = Mouse_Len )) +
+         geom_point(alpha = .1, color = 'dodgerblue4', size = 1.5) + 
+         geom_point( data = filter(cross_new_master,
+                                  abs(Human_Len - Mouse_Len) < 150),
+                    size = 1.5,
+                    color = 'black' ) +
+        theme_minimal() +
+        scale_x_sqrt(limits = c(1, 20000), breaks = c(1000, 5000, 15000) ) +
+        scale_y_sqrt(limits = c(1, 20000), breaks = c(1000, 5000, 15000) ) +
+        coord_equal() +
+        labs(title = paste0("3'UTR Length [bp] R = ",
+                               round(cor(
+                               cross_new_master$Human_Len,
+                               cross_new_master$Mouse_Len), 2)),
+             x = "in Homo sapiens",
+             y = "in Mus musculus",
+             subtitle = "black = delta 3'UTR Length < 150 bp\nblue  = delta 3'UTR Length > 150 bp")
+        
+human_trend <- rep('remains\nunchanged', nrow(cross_new_master))
+human_trend[which(cross_new_master$Human_Pval < 0.05)] <- 'tends to\nchange*'
+cross_new_master$human_trend <- human_trend
+
+wilcox.test( sqrt(filter(cross_new_master,
+                         human_trend == 'remains\nunchanged' &
+                           abs(Human_Len - Mouse_Len) < 150)$Mouse_LRT) ,
+             sqrt(filter(cross_new_master,
+                         human_trend == 'tends to\nchange*' &
+                           abs(Human_Len - Mouse_Len) < 150)$Mouse_LRT) )
+
+f4z2 <- ggplot(filter(cross_new_master, abs(Human_Len - Mouse_Len) < 150),
+               aes(x = human_trend,
+                   y = Mouse_LRT )) +
+        geom_violin(color = NA, alpha = .25, aes(fill = human_trend)) +
+        geom_boxplot( width = .4, outlier.color = NA, aes(fill = human_trend), alpha = .25 ) +
+        scale_fill_manual(values = rev(c('firebrick4', 'darkgrey')) ) +
+        scale_y_sqrt() +#limits = c(0, 60)) +
+        labs(x = "3'UTR Changes in ASD vs. Control",
+             y = "3'UTR Changes in Mus musculus\nAPLP1-/- vs. WT [LR Stat.]",
+             subtitle = "p-value = 0.001 (1025 genes)",
+             caption = "*significance level: p-value < 0.05"
+             ) +
+        guides(fill = FALSE, color = FALSE) +
+        theme_minimal()
+
+grid.arrange(f4z1, f4z2, widths = c(3.5, 2.5) )
+```
+
+> One can see, that if the gene tends to change in human (ASD vs. control), the mouse gene also tends to change (APLP1-/- vs. WT)
+
+> This indicates that there is a marginal correlation of the 3'UTR changes in both systems.
+
+## End
+
+```{r info}
+sessionInfo()
+```
+
+
+
+```{r, include = FALSE, eval = FALSE}
+# up-load to github
+
+```
+
