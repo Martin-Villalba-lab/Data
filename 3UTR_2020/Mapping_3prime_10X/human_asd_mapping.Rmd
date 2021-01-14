@@ -1,0 +1,634 @@
+---
+title: "Autism_Mapping_Plus_Analysis"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+> Analysis of 3'UTRs in neurons and other cell types from autism patients, post-mortem, Nuc-Seq (from Velmshev et al. 2019)
+
+INFORMATION: The large FASTQ & BAM files are not included here. To reproduce the results these have to be downloaded from GEO (https://www.ncbi.nlm.nih.gov/bioproject/PRJNA434002)  
+
+Final plots in the paper may differ slightly due to:
+
+* figures are not in order as in the paper (due to the intrinsic logic of this script and the input data)
+* changes pending on the peer-review process
+* collecting and final editing of sub-plots in Adobe Illustrator
+* differences R package versions or other parameters
+
+> Note: This is a reporting file providing all the necessary programming code to comprehend the main results of the paper.
+
+> Note: Precompield files are provided in this directory.
+
+```{r package-options, include=FALSE}
+knitr::opts_knit$set(warning=FALSE, fig.width=8, fig.height=8)  
+```
+
+> Note: Computed as HTML-File
+
+### Make the human reference for 3'UTRs (updated gene annotation for GRCh38)
+
+```{r load-packages, echo = FALSE, message = FALSE, warning = FALSE}
+require(scales)
+require(tidyverse)
+require(stringr)
+require(AnnotationDbi)
+require(ggpointdensity)
+require(viridis)
+require(gridExtra)
+require(ggrepel)
+require(ggbeeswarm)
+```
+
+## Create the transcriptomic reference for the human data (GRCh38)
+
+```{r make-reference, eval = FALSE}
+require(stringr)
+require(dplyr)
+require(GenomicFeatures)
+require(TxDb.Hsapiens.UCSC.hg38.knownGene) # updated version for GRCh38
+
+# derive genes & 3'UTRs
+txdb             <- TxDb.Hsapiens.UCSC.hg38.knownGene
+txbygene         <- transcriptsBy(txdb, "gene")
+threeUTR         <- threeUTRsByTranscript(txdb) #, use.names = TRUE)
+threeUTR         <- unlist( as(threeUTR, 'GRangesList'))
+threeUTR_reduced <- GenomicRanges::reduce( threeUTR )
+threeUTR_genes   <- findOverlaps( threeUTR_reduced, txbygene )
+
+anyNA(threeUTR_genes@from)
+anyNA(threeUTR_genes@to)
+anyNA(names(txbygene))
+# change the names of the unique regions, reomove non-matching entries
+names(threeUTR_reduced)[threeUTR_genes@from] <- names(txbygene)[threeUTR_genes@to] 
+threeUTR_reduced <- threeUTR_reduced[!is.na(names(threeUTR_reduced))]
+
+# give every gene with multiple terminal exons a unique name
+names(threeUTR_reduced) <- make.unique(names(threeUTR_reduced), sep = '_')
+
+# inspect this object
+threeUTR_reduced %>% names() %>% head() 
+length(threeUTR_reduced)
+
+# check it for an example gene
+# it has two main terminal exons ~ both with the length of ~ 5000 bp
+PTEN <- which('5728_1' == names(threeUTR_reduced)  )
+threeUTR_reduced[PTEN]
+
+# change the seq-levels
+seqlevels(threeUTR_reduced) <- str_split(seqlevels(threeUTR_reduced), 'chr', simplify = TRUE)[ ,2]
+threeUTR_reduced            <- keepSeqlevels(threeUTR_reduced, seqlevels(threeUTR_reduced)[1:22], pruning.mode="coarse" )
+seqlevels(threeUTR_reduced) 
+threeUTR_human <- threeUTR_reduced
+threeUTR_human <- threeUTR_human[ ( end(threeUTR_human) - start(threeUTR_human) ) > 100 ] # only for genes with a 3'UTR length of 100 or longer
+names(threeUTR_human) %>% anyNA()
+length(threeUTR_human)
+save(threeUTR_human, file = 'threeUTR_human.rda')
+
+load(file = 'threeUTR_human.rda')
+require(BSgenome)
+require(BSgenome.Hsapiens.UCSC.hg38)
+BS            <- BSgenome.Hsapiens.UCSC.hg38
+seqlevels(BS) <-   sub("chr", "", seqlevels(BS))
+
+utr_seq <- getSeq(BS, threeUTR_human) %>% as.character 
+identical( length(threeUTR_human), length(utr_seq) )
+
+save(utr_seq, file = 'humanUTR_sequences.rda')
+write.csv(utr_seq, file = 'humanUTR_sequences.csv')
+
+```
+
+## Download and map the single cell sequencing data of the autism cohort
+
+> This is an example only: Download the single cell sequencing data (FASTQ-files) from Velmshev et al. 2019 and map it with cellranger
+
+```{bash download-mapping, eval = FALSE}
+
+# for example, download with wget (check md5sum)
+wget https://sra-pub-src-1.s3.amazonaws.com/SRR9262917/5864_BA9_S14_L001_R2_001.fastq.1
+wget https://sra-pub-src-1.s3.amazonaws.com/SRR9262917/5864_BA9_S14_L002_R2_001.fastq.1
+# ... further samples
+
+# load the cellranger pipeline
+export PATH=/mnt/cellranger-2.2.0:$PATH
+
+# map with the cellranger pipeline
+cellranger count --id=RUN_5864 --sample=5864_BA9 --fastqs=/mnt/asd_pfc/fastq/ --transcriptome=/mnt/cellranger/refdata-cellranger-GRCh38-3.0.0/
+
+```
+
+## Run this script in order to extract the 3'UTR mapping positions  
+
+```{r count_utr_position, eval = FALSE}
+
+	                                      # the folder with the input FASTQ-files
+	anterior_list <- read_in_10Xutr(dir = '/mnt/asd_cin/fastq',
+	                                batch = 'anterior_cortex' )
+	save(anterior_list, file = 'new_poslists/anterior_cortex.rda')
+	# save as a list of 3'UTR mapping positions
+	
+	prefrontal_list <- read_in_10Xutr(dir = '/mnt/asd_pfc/fastq',
+	                                  batch = 'prefrontal_cortex' )
+	save(prefrontal_list, file = 'new_poslists/prefrontal_cortex.rda')
+
+```
+
+## Compute 3'UTR meta-positions (meta = averaged over the transcriptome)
+
+```{r meta_position_cell_Type, eval = FALSE}
+
+n <- 500 # Theshold: genes per cell
+
+load(file = 'new_poslists/prefrontal_cortex.rda')
+cells <- lapply(prefrontal_list, function(x){ (cells <- x %>% unlist2() %>% names() %>% table()); names(cells[cells > n]) })
+# number of single cells per run/patient
+sapply(cells, length) %>% unname()
+# averaged 3'UTR length
+prefrontal_cortex_metalen <- mapply(function(x, y){ out <- unlist2(x); mean(out[names(out) %in% y]) }, x = prefrontal_list, y = cells, SIMPLIFY = TRUE)
+
+# now with the table
+require(readr)
+require(ggbeeswarm)
+srr_tab <- read_csv2(file = 'srr_annotation.csv', col_names = FALSE)
+srr_10x <- filter(srr_tab, grepl('10x', X12 ))
+srr_asd <- filter(srr_10x, X15 %in% c('ASD', 'Control'))
+srr_asd_pre <- filter(srr_asd, X17 == 'Brain, prefrontal cortex' )
+srr_asd_pre$X15 %>% table()
+
+# get the indices
+index <- match( substring(srr_asd_pre$X12, 1, 4), str_split(names(prefrontal_cortex_metalen), '_', simplify = TRUE)[ ,6] )
+
+prefrontal_tbl <- cbind(Diagnose    = srr_asd_pre$X15,
+                        ID          = substring(srr_asd_pre$X12, 1, 4),
+                        Region      = srr_asd_pre$X17,
+                        Age         = srr_asd_pre$X14,
+                        Sex         = srr_asd_pre$X18,
+                        UTR3_Length = prefrontal_cortex_metalen[index] ) %>% as_tibble()
+prefrontal_tbl <- prefrontal_tbl[ !(duplicated(prefrontal_tbl$ID)),  ]
+prefrontal_tbl <- mutate(prefrontal_tbl, UTR3_Length = as.numeric(UTR3_Length))
+prefrontal_tbl <- mutate(prefrontal_tbl, Age = as.integer(Age))
+prefrontal_tbl
+table(prefrontal_tbl$Diagnose)
+
+# Now for the ACC
+load(file = 'new_poslists/anterior_cortex.rda')
+cells <- lapply(anterior_list, function(x){ (cells <- x %>% unlist2() %>% names() %>% table()); names(cells[cells > n]) })
+# number of single cells per run/patient
+sapply(cells, length) %>% unname()
+# averaged 3'UTR length
+anterior_cortex_metalen <- mapply(function(x, y){ out <- unlist2(x); mean(out[names(out) %in% y]) }, x = anterior_list, y = cells, SIMPLIFY = TRUE)
+
+srr_asd_cin <- filter(srr_asd, X17 == 'Brain, anterior cingulate cortex' )
+srr_asd_cin$X15 %>% table()
+index <- match( substring(srr_asd_cin$X12, 1, 4), str_split(names(anterior_cortex_metalen), '_', simplify = TRUE)[ ,7] )
+anterior_tbl <- cbind(Diagnose    = srr_asd_cin$X15,
+                        ID          = substring(srr_asd_cin$X12, 1, 4),
+                        Region      = srr_asd_cin$X17,
+                        Age         = srr_asd_cin$X14,
+                        Sex         = srr_asd_cin$X18,
+                        UTR3_Length = anterior_cortex_metalen[index] ) %>% as_tibble()
+anterior_tbl <- mutate(anterior_tbl, Age = as.integer(Age))
+anterior_tbl$UTR3_Length <- as.numeric(anterior_tbl$UTR3_Length)
+anterior_tbl
+ggplot( anterior_tbl, aes(x = Age, y = UTR3_Length, shape = Sex, colour = Diagnose ) ) + geom_point()
+
+# number of patients with both samples
+both <- intersect(anterior_tbl$ID, prefrontal_tbl$ID)
+filter(anterior_tbl, ID %in% both)
+
+# combine to get the final table
+meta_utr_asd_tbl <- rbind(prefrontal_tbl, anterior_tbl)
+
+# compute pairwise t-tests for group comparisons
+master_  <- mutate(meta_utr_asd_tbl, Contrast = paste(Cell_Type, Diagnose, sep = '_') )
+tt       <- pairwise.t.test(master_$UTR3_Length, master_$Contrast, p.adjust.method = "BH", pool.sd = FALSE)
+meta_sig <- diag(tt$p.value)
+contr    <- seq(1, length(meta_sig), by = 2)
+rownames(tt$p.value)[contr]
+colnames(tt$p.value)[contr] 
+table(meta_sig[contr] < .05)
+
+tt_tbl <- tibble(Cell_Type = str_split(rownames(tt$p.value)[contr], '_', simplify = TRUE)[ ,1],
+                 p.adjust = meta_sig[contr],
+                 FDR = 'n.s.' )
+tt_tbl$FDR[tt_tbl$p.adjust < 0.1] <- '*'
+tt_tbl$FDR[tt_tbl$p.adjust < 0.01] <- '**'  
+
+meta_utr_asd_test_tbl <- tt_tbl # write into a new table
+```
+
+> This is how the sample annotation (from Velmshev looks like)
+
+```{r show_samples}
+# load the pre-compiieled file
+load(file = 'meta_utr_asd_.rda')
+
+meta_utr_asd_tbl[ ,1:3]
+
+message('Number of annotated cell-types:')
+levels(meta_utr_asd_tbl$Cell_Type)
+
+message('Number of valid samples/patients:')
+table( filter(meta_utr_asd_tbl, Cell_Type == 'L5/6' )$Diagnose )
+
+message('The computed p-values (t-tests)')
+meta_utr_asd_test_tbl
+```
+
+> Plot the average 3'UTR length per cell-type.
+
+```{r plot_meta_utr, eval = TRUE, warning=FALSE, message=FALSE, fig.width=6, fig.height=5}
+# compute the corral points for plotting
+set.seed(101)
+raw    <- as.numeric(meta_utr_asd_tbl$Cell_Type)
+corral <- sapply( raw, function(x){ m1 <- x - .2; m2 <- x + .2 
+          out <- runif(1, min = x - 1, max = x + 1)  
+          if(out > m2) out <- m2
+          if(out < m1) out <- m1
+          return(out)
+          } )
+meta_utr_asd_tbl$corral <- corral
+
+gg_meta <- ggplot(meta_utr_asd_tbl, aes(x = Cell_Type, y = UTR3_Length)) + 
+  theme_minimal() +
+  geom_point(mapping = aes(x = corral, colour = Diagnose), alpha = .3, size = 2) +
+  coord_flip() +
+  stat_summary(size = .5, mapping= aes(colour = Diagnose) ) +
+  scale_colour_manual(values = c('firebrick3', 'dodgerblue4') ) +
+  labs(y = "3'UTR Length [bp] per Individual\n(averaged over expressed genes)",
+       x = 'Cell-Types',
+       caption = '* FDR < 10%  ** FDR < 5%') + 
+  theme() +
+  geom_text(data = meta_utr_asd_test_tbl,
+            aes(x = Cell_Type, y = 830,
+            label = paste(Cell_Type, FDR, sep = ' ')), size = 3, hjust = 0, nudge_x = 0.05)  +
+  scale_x_discrete( breaks = ( seq(-0.5, 18, 1) ) ) + 
+  scale_y_continuous( breaks = c( 1250, 1750), limits = c(830, 1860) ) +
+  geom_vline(xintercept = seq(-0.5, 18, 1), alpha = .25, size = .25 ) +
+  theme(plot.title = element_text(face = 'italic', size = 8),
+        legend.position = 'top')
+  
+gg_meta
+```
+
+> CONCLUSION: Averaged over the transcriptome 3'UTRs are longer in autism patients than in control individuals. 
+
+## Compute the gene-wise changes (autism vs. control) in 3'UTR length
+
+```{r, eval = FALSE}
+
+# read-in the original cell-type annotation from the Velmshev paper & assign
+anno <- read_csv2(file = 'cell_annotation.csv', col_names = TRUE)
+unique(anno$cluster)
+types <- unique(anno$cluster)
+str(types)
+types <- types[!is.na(types)] # exclude un-identified cells
+
+# match this to the identified 3'UTR positions (by cell-barcodes)
+cellty <- unique( names(unlist2(prefrontal_assign)) )
+fill <- rep(NA, length(cellty) )
+names(fill) <- cellty
+
+ids <-  filter(prefrontal_tbl, Age < 30)$ID
+prefrontal_assign   <- lapply(ids, function(x, y){ x <- filter(y, individual == x)
+                              out <- substring(x$cell, 1, 18); names(out) <- x$cluster; return(out) }, y = filter(anno, region == 'PFC')  )
+
+length(prefrontal_assign)
+length(prefrontal_list)
+
+pre_new_assigned <- mapply(function(x, y){ lapply(x, function(x, y){ 
+  fill_ <- fill
+  both <- intersect(names(x), y )
+  grp <- tapply(x[both], names(y[which(y %in% both)]), mean)
+  fill_[names(grp)] <- grp; return(fill_)
+  }, y = y )   }, x = prefrontal_list[ids], y = prefrontal_assign)
+
+# the same for the anterior cingulate samples
+ids <-  filter(anterior_tbl, Age < 30)$ID
+anterior_assign   <- lapply(ids, function(x, y){ x <- filter(y, individual == x); out <- substring(x$cell, 1, 18)
+                            names(out) <- x$cluster; return(out) }, y = filter(anno, region == 'ACC')  )
+
+length(anterior_assign)
+length(anterior_list)
+
+ant_new_assigned <- mapply(function(x, y){ lapply(x, function(x, y){ 
+  fill_ <- fill
+  both <- intersect(names(x), y )
+  grp <- tapply(x[both], names(y[which(y %in% both)]), mean)
+  fill_[names(grp)] <- grp; return(fill_)
+  }, y = y )   }, x = anterior_list[ids], y = anterior_assign)
+
+# make a for loop and list
+mat_list <- list()
+for( m in 1:17 ){
+  opc <- lapply( c(pre_new_assigned, ant_new_assigned), function(x){ sapply(x, function(x){ x[[m]] }) })
+  idx <- Reduce('intersect', lapply(opc, names) )
+  opc <- lapply(opc, function(x, y){ x[y] }, y = idx)
+  opc_ <- apply( do.call(rbind, opc ), 2, as.vector)
+  rownames( opc_ ) <- names(c(pre_new_assigned, ant_new_assigned))
+mat_list[[m]] <- opc_
+} 
+names(mat_list) <- cellty
+
+# exclude few individuals older than 30 years (like in the analysis of the Velmshev paper)
+lm_tbl <- rbind( filter(prefrontal_tbl, Age < 30), filter(anterior_tbl, Age < 30)  ) 
+save(mat_list, lm_tbl, file = 'utr_per_cell_type_matrix.rda' )
+
+# compute the linear model (ANOVA test)
+lm_list <- lapply(mat_list, function(x){
+            opc_pval <-  apply( x, 2, function(x, y){
+                  dat  <- tibble(len = x, Diagnose = y$Diagnose, Region = y$Region, Sex = y$Sex )
+                  asserted <- try(lm(len ~ Sex + Region + Diagnose, data = dat), silent = TRUE)
+                  if( class(asserted) != 'try-error' & sum(!is.na(x)) > 10 ){
+                  fit1 <- lm(len ~ Sex + Region + Diagnose, data = dat) # region 
+                  fit0 <- lm(len ~ Sex + Region, data = dat) # region 
+                  pval <- anova(fit1, fit0, test = 'LRT')$'Pr(>Chi)'[2]
+                  } else {
+                    pval <- NA
+                  }
+                  return(pval)
+             }, y = lm_tbl )
+            return(opc_pval)
+
+})
+# save(lm_list, file = 'lm_list.rda' ) # ... as it takes quite a while to compute it, save the result
+# The following section will use pre-compiled files
+```
+
+> Let's have a look at the structure of the data
+
+```{r}
+# load the pre-compieled data
+load(file = 'asd_utr_data.rda')
+
+message('Every entry of the list stores the result for one cell-type!')
+names(mat_list)
+
+message('Entry number 8 are the layer 2/3 neurons')
+str(mat_list[[8]])
+
+message('Rows are the patients/samples by ID')
+head(rownames(mat_list[[8]]))
+
+message('Cols are expressed transcripts (Entrez gene identifier + underscore if multiple transcripts per gene as before)')
+head(colnames(mat_list[[8]]))
+
+message("The 3'UTR lengths (matrix entries) are averaged over patients/samples")
+```
+
+> Plot the result for layer 2/3 neurons (differntial 3'UTR usage as autism vs. control, p-value from the linear model)
+
+```{r plot_l23_volcano, fig.width=5, warning=FALSE, message=FALSE}
+
+# compute the average group difference (ASD vs. control)
+ef_diff <- mapply(function(x, y){
+             eff <- apply( x, 2, function(x, z){
+             x1 <- mean(x[z$Diagnose == 'ASD'], na.rm = TRUE )
+             x2 <- mean( x[z$Diagnose == 'Control'], na.rm = TRUE )
+             (x1 - x2)
+             }, z = lm_tbl )
+             return(eff)
+  }, x=  mat_list, y = lm_list  )
+
+# scale the average difference in 3'UTR length
+# Reference for the sclaing functions: https://andrewpwheeler.com/2015/07/31/custom-square-root-scale-with-negative-values-in-ggplot2-r/
+S_sqrt <- function(x){sign(x)*sqrt(abs(x))}
+IS_sqrt <- function(x){x^2*sign(x)}
+S_sqrt_trans <- function() trans_new("S_sqrt",S_sqrt,IS_sqrt)
+
+# mark three genes by their gene symbol
+cand <- c('6659', '4685', '627') # Entrez gene identifier
+l23_volc_tbl <- tibble(x = ef_diff[ ,8], y = -log10( lm_list[[8]] ) ) 
+l23_gene_tbl <- tibble(x = ef_diff[ ,8][cand], y = -log10( lm_list[[8]][cand] ),
+                       Gene = c('SOX4', 'NCAM2', 'BDNF') )
+
+gg_l23_volc <- ggplot( filter(l23_volc_tbl, y > 1.3 ), aes(x = x, y = y   )) +
+  geom_pointdensity(size = .35, adjust = .05, size = .5) +
+  geom_point( data = filter(l23_volc_tbl, y <= 1.3 ), color = 'darkgrey', size = .5) +
+  theme_minimal() +
+  labs(y = '-log10(p-value)',
+       x = "Difference in 3'UTR Length\nASD vs.Control [bp] (L2/3 Neurons)",
+       color = "over-\nplotting\ndensity",
+       caption = "* density (color scale) shown\nfor genes raw p-value < 0.05" ) +
+         geom_pointdensity( size = 1, adjust = .1) +
+       theme_minimal() +
+  scale_x_continuous(trans="S_sqrt", breaks = c(-2000, -1000, -500, -200, 0, 200, 500, 1000, 2000)) +
+  geom_vline(xintercept = 0, col = 'black', alpha = .3, size = .2) +
+  geom_hline(yintercept = 1.3, col = 'red', alpha = .3, size = .2) +
+  scale_color_gradientn(colors = c('dodgerblue4', 'dodgerblue1', 'orange', 'orangered', 'red', 'red') ) +
+    geom_text_repel(colour = 'black', 
+                  nudge_x = 2,
+                  force = 1,
+                  box.padding = 1,
+                  segment.alpha = .5,
+                  data = l23_gene_tbl,
+                  mapping = aes(label = Gene )
+                  ) +
+  annotate('text', x = -.85, y = 1.1, color = 'red', label = '*') +
+  theme(plot.caption = element_text(color = 'red')) +
+  theme(legend.position = 'bottom')
+
+gg_l23_volc
+```
+
+> Let's plot significant gene hits! (two genes for layer 2/3 neurons and astroyptes, respectively)
+
+```{r plot_single_genes, warning=FALSE, message=FALSE, fig.width = 4.5}
+# change the factor levels, so that the Control is first (reference)
+lm_tbl$Diagnosis <- factor(lm_tbl$Diagnose, levels = c('Control', 'ASD')) 
+
+# random seed for the beeswarm function
+set.seed(101)
+  
+sox4_tbl <- tibble(Diagnosis = lm_tbl$Diagnosis, Length = mat_list[[8]][ ,'6659'] )
+
+gg_sox4  <- ggplot(sox4_tbl, aes(x = Diagnosis, y = Length)) +
+  geom_beeswarm(cex = 5, alpha = .75, size = .5) +
+  stat_summary(col = 'red', size = .25) + theme_minimal() +
+  ggtitle('Gene: SOX4') + 
+  scale_colour_manual(values = c('dodgerblue4', 'firebrick3') ) +
+  labs(x = 'Diagnosis', y = "3'UTR Length [bp]") +
+  guides(color = FALSE) +
+  labs(subtitle = '(from e, FDR < 10%)')
+
+ncam2_tbl <- tibble(Diagnosis = lm_tbl$Diagnosis, Length = mat_list[[8]][ ,'4685'] )
+
+gg_ncam  <- ggplot(ncam2_tbl, aes(x = Diagnosis, y = Length)) +
+  geom_beeswarm(cex = 5, alpha = .75, size = .5) +
+  stat_summary(col = 'red', size = .25) + theme_minimal() +
+  ggtitle('Gene: NCAM2') + 
+  scale_colour_manual(values = c('dodgerblue4', 'firebrick3') ) +
+  labs(x = 'Diagnosis', y = "3'UTR Length [bp]") +
+  guides(color = FALSE) +
+  labs(subtitle = '(from e, FDR < 10%)')
+
+pten_tbl <- tibble(Diagnosis = lm_tbl$Diagnosis, Length = mat_list[[10]][ ,'5728_1'])
+                    
+gg_pten <- ggplot(pten_tbl, aes(x = Diagnosis, y = Length)) +
+  geom_beeswarm(cex = 5, alpha = .75, size = .5) +
+  stat_summary(col = 'red', size = .25) + theme_minimal() +
+  ggtitle('Gene: PTEN') + 
+  scale_colour_manual(values = c('dodgerblue4', 'firebrick3') ) +
+  labs(x = 'Diagnosis', y = "3'UTR Length [bp]") +
+  guides(color = FALSE) +
+  labs(subtitle = '(AST-FB, FDR < 10%)')
+
+ntrk2_tbl <- tibble(Diagnosis = lm_tbl$Diagnosis, Length = mat_list[[10]][ ,'4915_2'])
+                    
+gg_ntrk <- ggplot(ntrk2_tbl, aes(x = Diagnosis, y = Length)) +
+  geom_beeswarm(cex = 5, alpha = .75, size = .5) +
+  stat_summary(col = 'red', size = .25) + theme_minimal() +
+  ggtitle('Gene: NTRK2') + 
+  scale_colour_manual(values = c('dodgerblue4', 'firebrick3') ) +
+  labs(x = 'Diagnosis', y = "3'UTR Length [bp]") +
+  guides(color = FALSE) +
+  labs(subtitle = '(AST-FB, FDR < 10%)')
+
+gene_plot <- arrangeGrob(gg_ncam, gg_ntrk, gg_sox4, gg_pten, ncol = 2)
+plot(gene_plot)
+```
+
+## Pathway analysis (enrichment of gene categories for 3'UTR lengthening autism vs. control)
+
+```{r compute_gsea, eval = FALSE}
+score <- eff_list[ ,8] # select layer 2/3 neurons as score
+names(score) <- str_split(names(score), '_', simplify = TRUE)[ ,1] # remove the transcript level
+score <- sort(score, decreasing = TRUE) # order the score
+plot(score)
+
+# compute the pathway enrichment with Reactome PA
+require(ReactomePA)
+set.seed(101)
+pw <- gsePathway( score, minGSSize = 10, organism = 'human', pvalueCutoff = .1, nPerm = 1000)
+pw@result
+```
+
+> Let's plot significant pathways! (for layer 2/3 neurons and astroyptes, respectively)
+
+```{r plot_pathways, fig.height=4}
+# load the pre-compiled files
+load(file = 'asd_pathway.rda')
+
+# ... plot it
+ggplot( path_l23_tbl, aes(y = setSize, x = Description, fill = NES ) ) + geom_col() + coord_flip() +
+             ggtitle("GSEA Pathway (Rank by 3'UTR\nLengthening), FDR < 10%") + theme_minimal() +
+             labs(x = '', y = 'Size of Gene Sets') +
+             scale_fill_gradient(low = 'dodgerblue4', high = 'black') 
+
+ggplot( path_astpp_tbl, aes(y = setSize, x = Description, fill = NES ) ) + geom_col() + coord_flip() +
+             ggtitle("GSEA Pathway (Rank by 3'UTR\nLengthening in AST-PP), FDR < 10%") + theme_minimal() +
+             labs(x = '', y = 'Size of Gene Sets') +
+             scale_fill_gradient(low = 'dodgerblue4', high = 'black') 
+
+```
+
+## Search for enriched motifs in 3'UTRs which are longer in autism patients compared to the control cohort
+
+> Prepare the input for the homer2 tool
+
+```{r motif_analysis_input, eval = FALSE}
+# Feature selection
+                                                                                             # UTR length greather than 500 bp
+fgd <- sort( lm_list$`L2/3`[ef_diff[ ,'L2/3'] > 0 & sapply(utr_seq[rownames(ef_list)], nchar) > 500 ] )[1:500] # 500 genes with highest lengthening effect
+bck <- sort( lm_list$`L2/3`[ef_diff[ ,'L2/3'] < 0 & sapply(utr_seq[rownames(ef_list)], nchar) > 500 ] )[1:500]
+
+require(Biostrings)                                        # distal parts of the UTRs (last 250 bps)
+bck_motif <- mapply( function(x, y){  substring(x, nchar(x) - 250, nchar(x)  )  }, x = utr_seq[names(bck)] )
+fgd_motif <- mapply( function(x, y){  substring(x, nchar(x) - 250, nchar(x)  )  }, x = utr_seq[names(fgd)] )
+# save as fasta for the homer2 tool as input
+x_bck <- DNAStringSet(bck_motif)
+writeXStringSet(x_bck, filepath = 'bck_motif.fasta')
+x_set <- DNAStringSet(fgd_motif)
+writeXStringSet(x_set, filepath = 'fgd_motif.fasta')
+```
+
+> Run homer2 (de-novo motif analysis)
+
+```{bash, eval = FALSE}
+ cd /Volumes/g381-daten2/goepferich/3UTR_REANALYSIS_2019/autistic_human_brain
+ export PATH=$PATH:/Users/manuelgopferich/Downloads/bin
+ homer2 denovo -strand + -len 7 -i fgd_motif.fasta -b bck_motif.fasta > motif_homer2.txt
+```
+
+> First have a look at all results (25), then plot the top 4 results (as in the paper)
+
+```{r plot_motif_top4, warning = FALSE, fig.width=3.5}
+# read the homer2 result into R using the marge package
+hout <- marge::read_motif("motif_homer2.txt")
+
+hout[ ,1:4]
+
+require(ggseqlogo)
+
+m1 <- t(as.matrix(hout$motif_pwm[[1]])) 
+rownames(m1) <- c('A', 'C', 'G', 'U') # for RNA T --> U
+
+m2 <- t(as.matrix(hout$motif_pwm[[2]])) 
+rownames(m2) <- c('A', 'C', 'G', 'U')
+
+m3 <- t(as.matrix(hout$motif_pwm[[3]])) 
+rownames(m3) <- c('A', 'C', 'G', 'U')
+
+m4 <- t(as.matrix(hout$motif_pwm[[4]])) 
+rownames(m4) <- c('A', 'C', 'G', 'U')
+
+gg_motif1 <- ggseqlogo(m1) + theme(text = element_text(face = 'bold', size = 10))
+gg_motif2 <- ggseqlogo(m2) + theme(text = element_text(face = 'bold', size = 10))
+gg_motif3 <- ggseqlogo(m3) + theme(text = element_text(face = 'bold', size = 10))
+gg_motif4 <- ggseqlogo(m4) + theme(text = element_text(face = 'bold', size = 10))
+
+gg_motif_homer  <- arrangeGrob(gg_motif1, gg_motif2, gg_motif3, gg_motif4, ncol = 1)
+plot(gg_motif_homer )
+```
+
+> To confirm *in silico* that there is an effect of the CPE motif one can assess directly the location of the motif
+
+```{r cpe_effect_reverse_approach, fig.width=3.5}
+# load the pre-compiled file
+load(file = 'cpe_l23_distr_tbl.rda')
+
+# Genes where clustered whether they bear the CPE motif in the distal part of the 3'UTR
+# This poses the reverse analysi to the homer2 analysis (This is a supervised approach)
+
+# conduct a chi-square test
+chisq.test( matrix(cpe_l23_distr_tbl$cts, 3, 2) )
+
+# plot it
+       ggplot(cpe_l23_distr_tbl , aes(x = grp, y = cts, fill = cpe )) +
+       geom_col(color = 'black') +
+       theme_minimal() +
+       scale_fill_manual(values = c('dodgerblue2', 'darkgrey', 'deeppink')) +
+       labs(fill = "CPE Motif\nLocation\nin 3'UTR",
+            x = "3'UTR Trend\nASD vs. Control", y = "top 250 genes per group\n(lowest p-value ANOVA test)",
+            subtitle = 'p-value < 0.001') +
+      ggtitle('L2/3 Neurons')
+```
+
+> CONCLUSION: Also in the reverse/supervised analysis the distal parts of 3'UTRs getting longer inautism vs. control are enriched for the CPE motif.
+
+## END
+
+```{r info}
+sessionInfo()
+```
+
+
+```{r, eval = FALSE, include = FALSE}
+
+save(meta_utr_asd_tbl, meta_utr_asd_test_tbl, file = 'meta_utr_asd_.rda')
+save(lm_list, mat_list, lm_tbl, file = 'asd_utr_data.rda')
+save(path_astpp_tbl, path_l23_tbl, file = 'asd_pathway.rda')
+save(cpe_l23_distr_tbl, file = 'cpe_l23_distr_tbl.rda')
+
+
+# motifs
+
+```
+
