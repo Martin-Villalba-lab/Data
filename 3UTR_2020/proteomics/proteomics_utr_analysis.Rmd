@@ -1,0 +1,253 @@
+---
+title: "Proteomics_vs_UTR"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+> Analysis of 3'UTR usage vs. protein production in neural stem cells of the subventricular zone (Preprint: Goepferich & George et al. 2020)
+
+Final plots in the paper may differ slightly due to:
+
+* figures are not in order as in the paper (due to the intrinsic logic of this script and the input data)
+* changes pending on the peer-review process
+* collecting and final editing of sub-plots in Adobe Illustrator
+* differences R package versions or other parameters
+
+> Note: This is a reporting file providing all the necessary programming code to comprehend the main results of the paper.
+
+> Note: Precompield files are provided in this directory.
+
+```{r package-options, include=FALSE}
+knitr::opts_knit$set(warning=FALSE, fig.width=8, fig.height=8)  
+```
+
+> Note: Computed as HTML-File
+
+## Load the data (This will be provided in a table)
+
+These are the proteomics (quantified protein expression) and transcriptomics results (gene expression levels)
+
+```{r load_data}
+load(file = 'proteomics_data.rda')
+
+te_tbl
+```
+
+> TE = translation efficiency or translation index (protein by mRNA)
+
+> LFQ = label free quantification (protein quantification)
+
+> BM = base mean (convention, summed UMI counts over single cells)
+
+> EGF/EGFR = EGF treated in *in-vitro* NSCs (this represent *in-vivo* active NSCs) 
+
+> BMP/BMP4 = BMP4 treated in *in-vitro* NSCs (this represent *in-vivo* quiescent NSCs) 
+
+```{r packages, echo = FALSE, message = FALSE, warning = FALSE}
+# load packages and set S4 class
+require(tidyverse)
+require(GenomicRanges)
+require(ggpointdensity)
+require(gridExtra)
+require(ggrepel)
+require(ggbeeswarm)
+```
+
+## Inspect the proteomics results (as a volcano plot)
+
+```{r proteomics_volcano}
+
+# subset proteins to non-significant
+te_ns   <- filter(te_tbl, is.na(Prot_Sig) )
+# ... and significant ones
+te_sg_a <- filter(te_tbl, !is.na(Prot_Sig) & Prot_FC < 0)
+te_sg_q <- filter(te_tbl, !is.na(Prot_Sig) & Prot_FC > 0)
+
+                        # flip LFC direction
+ggplot( te_ns, aes( x = (-1)*Prot_FC, y = -log10(Prot_Pvalue) ) ) +
+  geom_point(col = 'grey', size = .75) +
+  geom_point(data = te_sg_q, col = 'lightblue', size = .75) +
+  geom_point(data = te_sg_q, col = 'black', shape = 1, size = .75) +
+  geom_point(data = te_sg_a, col = 'red', size = .75) +
+  geom_point(data = te_sg_a,col = 'black', shape = 1, size = .75) +
+  geom_vline(xintercept = 0, col = 'black', size = .25) +
+  theme_minimal() +
+  xlim(c(-7., 7.)) +
+  labs(x = "aNSCs (EGF) vs. qNSC (BMP4)",
+       y = '-log10(p-value)') +
+  ggtitle('Proteomics (FDR < 5%)')
+
+```
+
+> ... continue with the comparison of proteomics to 3'UTR trends
+
+## Effect of 3'UTR shortening on protein production (protein intensities by gene counts) comparing *in-vitro* active to quiescent NSCs
+
+> ... first as a boxplot (to see the group difference)
+
+> Note: Here we focus on the significant proteins (since they have less noice than others).
+
+```{r utr_trend_1, fig.width= 3.25}
+
+# subset to the shortening genes (3'UTR shortening from in vitro)
+shorter_vit <- which(vitro_corr < -.1 & p.adjust(vitro_test, method = 'fdr') < .05 )
+
+# subset to significant genes
+te_sht  <- filter(te_tbl, ENSG %in% substring( names(shorter_vit), 1, 18 ) & Prot_Sig == 'BMP4' )
+te_ctrl <- filter(te_tbl, Prot_Sig == 'BMP4' & !(ENSG %in% substring( names(shorter_vit), 1, 18 )  ) ) # match
+
+# compute delta in protein production (aNSCs vs. qNSCs)
+ctrl    <- te_ctrl$TE_EGF - te_ctrl$TE_BMP
+sht     <- te_sht$TE_EGF - te_sht$TE_BMP
+
+# nominal significance (test based on genes/proteins)
+wilcox.test(ctrl, sht)
+
+# plot it as a boxplot
+boxplot( list(others = ctrl, shortening = sht),
+        ylim = c(-4,4), xlab = "3'UTR Trend",
+        ylab = 'Change in Protein Production (aNSCs vs. qNSCs)')
+```
+
+> ... now as a scatter-plot
+
+```{r utr_trend_2, fig.height=4.5, fig.width = 4.5}
+
+gg_scat_trend <- ggplot( te_ctrl, aes( x = TE_BMP, y = TE_EGF ) ) +
+  geom_point(col = 'grey', size = 1, alpha = .75) + 
+  geom_point(data = te_sht, col = 'deeppink', alpha = .75, size = 1.5) +
+  geom_point(data = te_sht, col = 'black', shape = 1, size = 1.5) +
+  geom_hline(yintercept = 0, size = .75, alpha = .25, col = 'red') +
+  geom_vline(xintercept = 0, size = .75, alpha = .25, col = 'red') +
+  geom_abline(slope = 1, intercept = 0, col = 'black', size = .25) +
+  theme_minimal() +
+  ylim(c(-6,6)) + xlim(c(-6,6)) +
+  coord_equal() +
+  labs(x = "qNSC (BMP4) [log2 TI]",
+       y = 'aNSC (EGF) [log2 TI]',
+       caption = 'magenta = genes getting shorter in aNSC\nand with sig. change in protein abundance'
+       ) +
+  theme(plot.title = element_text(color = 'deeppink', size = 10))
+
+gg_scat_trend
+```
+
+> ... next, the analysis will center around the triplicates from proteomics to estimate biological variation
+
+> ... an interaction test (linear model) applied on a averaged gene/protein effect (for 3'UTR shortening genes) will be carried out over the triplicates
+
+```{r triplicates}
+
+mt <- match(te_tbl$ENSG, prot_nms$ENSG) # match by gene name
+mt_tbl <- prot_repli[mt, ]  # and subset
+
+# compute the change in translation with respect to sample group (active vs. quiescent)
+# for every gene/protein 
+
+ti_q1 <- log2( mt_tbl$BMP4_1/te_tbl$BMP4_BM )
+ti_q1 <- ti_q1 - mean(ti_q1, na.rm = TRUE)
+
+ti_q2 <- log2( mt_tbl$BMP4_2/te_tbl$BMP4_BM )
+ti_q2 <- ti_q2 - mean(ti_q2, na.rm = TRUE)
+
+ti_q3 <- log2( mt_tbl$BMP4_3/te_tbl$BMP4_BM )
+ti_q3 <- ti_q3 - mean(ti_q3, na.rm = TRUE)
+
+ti_a1 <- log2( mt_tbl$BMP4_1/te_tbl$EGFR_BM )
+ti_a1 <- ti_a1 - mean(ti_a1, na.rm = TRUE)
+
+ti_a2 <- log2( mt_tbl$BMP4_2/te_tbl$EGFR_BM )
+ti_a2 <- ti_a2 - mean(ti_a2, na.rm = TRUE)
+
+ti_a3 <- log2( mt_tbl$BMP4_3/te_tbl$EGFR_BM )
+ti_a3 <- ti_a3 - mean(ti_a3, na.rm = TRUE)
+
+# define the gene clusters (shortening vs. others)
+shorter_vit <- which(vitro_corr < -.1 & p.adjust(vitro_test, method = 'fdr') < .05 )
+sht_genes <- filter(te_tbl, ENSG %in% substring( names(shorter_vit), 1, 18 )  & Prot_Sig == 'BMP4' )$ENSG
+sht_ix   <-   te_tbl$ENSG %in% substring( names(shorter_vit), 1, 18 ) & te_tbl$Prot_Sig == 'BMP4'  
+oth_ix   <-   !(te_tbl$ENSG %in% substring( names(shorter_vit), 1, 18 )) & te_tbl$Prot_Sig == 'BMP4' 
+
+# plot the result
+par(mfrow=c(1,2))
+boxplot( ti_q1[sht_ix], ti_q2[sht_ix], ti_q3[sht_ix],
+         ti_a1[sht_ix], ti_a2[sht_ix], ti_a3[sht_ix],
+         main = 'shorter UTR, sig. Protein',
+         ylab = 'translation Index',
+         xlab = 'qNSCs (1-3), aNSCs (4-6)')
+
+boxplot( ti_q1[oth_ix], ti_q2[oth_ix], ti_q3[oth_ix],
+         ti_a1[oth_ix], ti_a2[oth_ix], ti_a3[oth_ix],
+         main = 'other UTR, sig. Protein',
+         ylab = 'translation Index',
+         xlab = 'qNSCs (1-3), aNSCs (4-6)' )
+
+sht_ti <-  list( ti_q1[sht_ix], ti_q2[sht_ix], ti_q3[sht_ix],
+                 ti_a1[sht_ix], ti_a2[sht_ix], ti_a3[sht_ix] )
+
+oth_ti <-  list( ti_q1[oth_ix], ti_q2[oth_ix], ti_q3[oth_ix],
+                 ti_a1[oth_ix], ti_a2[oth_ix], ti_a3[oth_ix] )
+
+# now, one can average over the gene/protein clusters
+sht_mean <- sapply(sht_ti, function(x){ mean(x, na.rm = TRUE) } )
+oth_mean <- sapply(oth_ti, function(x){ mean(x, na.rm = TRUE) } )
+
+# ... and write this into a table
+ti_tbl <- tibble( TI = c(sht_mean, oth_mean),
+                  Cell_Type = factor(rep(rep(c('qNSC', 'aNSC'), each = 3), 2),
+                                     levels = c('qNSC', 'aNSC')),
+                  UTR = rep(c('shorter', 'other'), each = 6))
+
+# This is the ineraction test 
+fit1 <- lm(TI ~ Cell_Type + UTR + Cell_Type*UTR, data = ti_tbl)
+summary(fit1) # we are interested in the interaction term 'Cell_Type*UTR'
+```
+
+> The effect of higher protein outcome in aNSCs for genes undergoing 3'UTR shortening is consitent across the triplicates (from proteomics)
+
+```{r interaction_plot, fig.height=3.5, fig.width=2}
+
+# plot the interaction result
+gg_trip <- ggplot(ti_tbl, aes(x = Cell_Type, y = TI, color = UTR, group = UTR )) + geom_beeswarm(cex = 5, size = 1) +
+  theme_minimal() +
+  stat_summary(fun = mean, geom="line") +
+  labs(y = 'Average Translation Index\n (TI) [log2(LFQ/UMI)]',
+       x = 'NSC Transition',
+       color = "3'UTR Trend"
+       ) +
+  scale_color_manual(values = c('darkgrey', 'deeppink' )) +
+  theme(legend.position = 'top')
+
+gg_trip
+```
+
+In this plot every point (statisticla unit) is a replicate (mouse) 
+
+> CONCLUSION: Genes undergoing 3'UTR shortening from qNSCs to aNSCs also tend to have higher protein production in aNSCs vs. qNSCs
+
+> INTERPRETATION: In NSCs, shortening of 3'UTRs correlates with higher mRNA translation efficiency. 
+
+## End
+
+```{r info}
+sessionInfo()
+```
+
+
+
+```{r, include = FALSE, eval = FALSE}
+# up-load to github
+save(vitro_corr, vitro_test, te_tbl, prot_nms, prot_repli, file = 'proteomics_data.rda')
+```
+
+
+
+
+
