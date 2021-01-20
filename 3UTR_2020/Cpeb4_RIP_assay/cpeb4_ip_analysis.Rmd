@@ -1,0 +1,96 @@
+---
+title: "CPEB4_IP_Analysis"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+> Analysis of CPEB4 binding to mRNAs in *in-vitro* NSCs (by RNA-immunoprecipitation = RIP) (Preprint: Goepferich & George et al. 2020)
+
+Final plots in the paper may differ slightly due to:
+
+* figures are not in order as in the paper (due to the intrinsic logic of this script and the input data)
+* changes pending on the peer-review process
+* collecting and final editing of sub-plots in Adobe Illustrator
+* differences R package versions or other parameters
+
+> Note: This is a reporting file providing all the necessary programming code to comprehend the main results of the paper.
+
+> Note: Precompield files are provided in this directory.
+
+```{r package-options, include=FALSE}
+knitr::opts_knit$set(warning=FALSE, fig.width=8, fig.height=8)  
+```
+
+> Note: Computed as HTML-File
+
+## Load the data (This will be provided in a table)
+
+These are the RIP assay results (output from DESeq2)
+
+```{r load_data}
+load(file = 'rip_tbl.rda')
+
+rip_tbl[ ,1:3]
+```
+
+> logFC_Enrichment = log-enrichment in CPEB4-IP fraction over control fractions (IGg and Input), n = 2
+
+```{r packages, echo = FALSE, message = FALSE, warning = FALSE}
+# load packages and set S4 class
+require(tidyverse)
+require(GenomicRanges)
+require(ggpointdensity)
+require(gridExtra)
+require(ggrepel)
+require(ggbeeswarm)
+```
+
+## Inspect the CPEB4-RIP assay as an MA-plot
+
+```{r proteomics_volcano, warning=FALSE, fig.height=4, fig.width=6}
+
+gg_cpeb4_rip <- ggplot(rip_tbl, aes(y = logFC_Enrichment, x =  Mean_IGg_Fraction)) +
+  geom_point( data = filter(rip_tbl, is.na(Sig_Level_DESeq2) ), size = 1.5, color = 'darkgrey', alpha = .25) +
+  geom_point( data = filter(rip_tbl, !is.na(Sig_Level_DESeq2) ),
+              mapping = aes(color = Sig_Level_DESeq2), size = 1.5, alpha = .5) +
+  geom_point( data = filter(rip_tbl, !is.na(Sig_Level_DESeq2) ), shape = 1, size = 1.5, alpha = .5) +
+  geom_hline(yintercept = 0, col = 'black', size = .2, alpha = .25) +
+  theme_minimal() +
+  scale_x_log10( breaks = c(100, 1000, 10000), limits = c(25, 1e4) ) +
+  ylim(c(-3,3)) +
+  scale_colour_manual(values = c( 'firebrick4', 'red'), na.value = 'lightgrey') +
+  labs(y = 'log enrichment ratio\n(Affinity of mRNA to CPEB4)',
+       x = 'Read Counts in Control Samples',
+       color = "Significance\n(RIP enriched)"
+       ) +
+  ggtitle('CPEB4 RIP Assay')
+
+gg_cpeb4_rip
+
+```
+
+
+## End
+
+```{r info}
+sessionInfo()
+```
+
+
+
+```{r, include = FALSE, eval = FALSE}
+# up-load to github
+save(rip_tbl, file = 'rip_tbl.rda')
+```
+
+
+
+
+
